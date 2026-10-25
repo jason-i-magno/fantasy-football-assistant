@@ -4,6 +4,9 @@
 |--------------------------------|-------------------------------------------------------------|
 | /user/<username>               | once per run                                                |
 | /league/<id>, /users, /drafts  | once per run                                                |
+| /league/<id>/rosters           | once per run                                                |
+| /league/<id>/transactions/<wk> | once per run                                                |
+| /state/nfl                     | once per run                                                |
 | /draft/<id>                    | every DRAFT_REFRESH_SECONDS, and again whenever the pick    |
 |                                | count changes so `last_picked` (the clock) is never stale   |
 | /draft/<id>/picks              | never cached; fetched on every poll                         |
@@ -142,6 +145,26 @@ class SleeperClient:
             f"drafts:{league_id}", f"/league/{league_id}/drafts", f"drafts for league {league_id}"
         )
         return data if isinstance(data, list) else []
+
+    def rosters(self, league_id: str) -> list[dict[str, Any]]:
+        data = self._once_per_run(
+            f"rosters:{league_id}", f"/league/{league_id}/rosters", f"rosters for league {league_id}"
+        )
+        return data if isinstance(data, list) else []
+
+    def transactions(self, league_id: str, week: int) -> list[dict[str, Any]]:
+        data = self._once_per_run(
+            f"transactions:{league_id}:{week}",
+            f"/league/{league_id}/transactions/{week}",
+            f"week {week} transactions for league {league_id}",
+        )
+        return data if isinstance(data, list) else []
+
+    def nfl_state(self) -> dict[str, Any]:
+        data = self._once_per_run("state:nfl", "/state/nfl", "the NFL state")
+        if not isinstance(data, dict) or not data.get("season"):
+            raise SleeperError("Sleeper sent an unusable NFL state payload.")
+        return data
 
     # -- live board -----------------------------------------------------------------
 

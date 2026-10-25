@@ -10,6 +10,7 @@ uv run pytest                                    # full suite, offline, ~1.5s
 uv run pytest tests/test_board.py::test_name     # one test (or -k PATTERN)
 uv run ffa draft replay tests/fixtures/replay_mock_12team.jsonl --snapshot 2   # offline smoke test of the whole pipeline
 uv run ffa draft doctor                          # live: validate .env, resolve IDs, dump raw draft settings
+uv run ffa waivers --league ID --player NAME     # live: free agent or on waivers, and until when
 ```
 
 No linter, formatter or type checker is configured. Config comes from `./.env` (see
@@ -21,13 +22,14 @@ with `--locked`, so a dependency change must ship with its updated `uv.lock`.
 
 ## Layout
 
-The CLI is `ffa <tool> <command>`. `ffa draft` (a live Sleeper snake-draft assistant) is the
-only tool so far; the project is meant to grow in-season tools alongside it.
+The CLI is `ffa <tool> <command>`. There are two tools: `ffa draft` (a live Sleeper
+snake-draft assistant) and `ffa waivers` (free agent or on waivers, right now).
 
-- `ffa/` top level: code shared across tools — `sleeper.py` (API client), `config.py`, `models.py`.
-- `ffa/draft/`: everything draft-specific.
-- `ffa/cli.py`: the single entry point. Each tool is a subparser group; the draft commands
-  still live in this file. Split shared plumbing out when a second tool lands.
+- `ffa/` top level: code shared across tools — `sleeper.py` (API client), `espn.py` (NFL
+  kickoff times, which Sleeper doesn't publish), `config.py`, `models.py`.
+- `ffa/draft/` and `ffa/waivers/`: each tool's logic and rendering.
+- `ffa/cli.py`: the single entry point. Each tool is a subparser; the thin command functions
+  for both tools live here, with shared helpers like `_config_for` at the bottom.
 - `docs/draft-spec.md`: the original design doc and source of truth for the draft tool. It
   predates the `draftbot` → `ffa` rename, and research has since moved from per-player to
   per-shortlist (see below).
@@ -54,6 +56,16 @@ never a dependency: every failure path falls back to the heuristic shortlist, `r
 degrades after 5s, and `RESEARCH_BUDGET` is a hard stop. The prompt template is
 `draft/prompts/research.md`. The web search tool version depends on the model: when adding
 a model, update `WEB_SEARCH_MODERN_MODELS` in `config.py`.
+
+## Waivers
+
+An unrostered player is not necessarily a free agent. Before telling the user a player can
+be added, run `ffa waivers --player NAME` (add `--league ID` for a league other than the
+`.env` one). `ffa/waivers/status.py` applies two rules, clearing at whichever ends later:
+the after-game lock (from his team's kickoff until the league's clear day, 12:05 AM Pacific)
+and the post-drop hold (`waiver_clear_days` less an hour). Its docstring has the details and
+how they were verified. Only `waiver_day_of_week: 2` has been checked against real claims;
+custom daily waivers raise `UnsupportedWaivers` instead of guessing.
 
 ## Constraints and gotchas
 

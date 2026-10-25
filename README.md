@@ -1,8 +1,9 @@
 # fantasy-football-assistant
 
-Terminal tools for Sleeper fantasy football leagues, run as `ffa <tool> <command>`. There is
-one tool so far, `ffa draft`, a live snake-draft assistant; in-season tools will sit alongside
-it.
+Terminal tools for Sleeper fantasy football leagues, run as `ffa <tool> <command>`:
+
+- `ffa draft` — a live snake-draft assistant.
+- `ffa waivers` — which unrostered players are free agents, and which are on waivers until when.
 
 ## Setup
 
@@ -86,6 +87,29 @@ The research layer is an enhancement, never a dependency: if the API fails, the 
 out, or a call is slow, you get the heuristic shortlist with a note saying so. `recommend`
 waits 5 seconds and then degrades — pass `--wait 60` to wait longer when you aren't on the
 clock.
+
+## Waivers
+
+```bash
+uv run ffa waivers                       # top unrostered players: free agent, or on waivers until when
+uv run ffa waivers --pos RB --pos WR     # only these positions
+uv run ffa waivers --player "Pitts"      # look players up by name, rostered or not
+uv run ffa waivers --league ID --json    # another league than SLEEPER_LEAGUE_ID; JSON for scripts
+```
+
+Sleeper's API has no waiver-status field, and an unrostered player isn't necessarily a free
+agent. With custom daily waivers off, two rules put him on waivers, and he clears at whichever
+ends later:
+
+1. **After-game lock** — once his NFL team kicks off, he's on waivers until the league's clear
+   day at 12:05 AM Pacific (`waiver_day_of_week`; "Tue After Day" clears Wednesday). Teams on
+   bye aren't locked.
+2. **Post-drop hold** — a dropped player stays on waivers for `waiver_clear_days` days less an
+   hour (Sleeper's "2 days" is 47 hours), and claims on him process when the hold ends.
+
+Both rules were checked against a season of real transactions. Kickoff times come from ESPN's
+public scoreboard API, since Sleeper doesn't publish them. Leagues using custom daily waivers
+are refused rather than guessed at. Times print in your machine's timezone.
 
 ## Tests
 
