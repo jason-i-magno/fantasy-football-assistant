@@ -74,7 +74,7 @@ wheels = [
 ]
 
 [[package]]
-name = "draftbot"
+name = "fantasy-football-assistant"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

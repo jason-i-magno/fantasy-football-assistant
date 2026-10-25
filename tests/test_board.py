@@ -3,8 +3,8 @@
 import pytest
 from helpers import make_draft_raw, make_pick_raw, make_player
 
-from draftbot import board
-from draftbot.board import (
+from ffa.draft import board
+from ffa.draft.board import (
     UnsupportedDraftError,
     build_state,
     parse_draft,

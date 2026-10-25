@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from .models import FANTASY_POSITIONS, Player, RosterSlot
+from ..models import FANTASY_POSITIONS, Player, RosterSlot
 
 log = logging.getLogger(__name__)
 

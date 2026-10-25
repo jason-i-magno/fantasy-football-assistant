@@ -2,9 +2,9 @@
 
 from helpers import make_draft_raw, make_pick_raw, make_player, make_pool
 
-from draftbot.board import build_state, parse_draft, parse_picks
-from draftbot.needs import fill_roster, parse_roster_positions
-from draftbot.shortlist import build_shortlist, context_block
+from ffa.draft.board import build_state, parse_draft, parse_picks
+from ffa.draft.needs import fill_roster, parse_roster_positions
+from ffa.draft.shortlist import build_shortlist, context_block
 
 SPEC_POSITIONS = ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "FLEX", "K", "DEF"] + ["BN"] * 6
 
@@ -103,8 +103,8 @@ def test_defense_only_endgame_shows_the_defenses_instead_of_an_empty_table():
     """Defenses can never be candidates (no rank), so the panel must not just go blank."""
     from rich.console import Console
 
-    from draftbot import ui
-    from draftbot.session import DraftView
+    from ffa.draft import ui
+    from ffa.draft.session import DraftView
 
     players = make_pool({"RB": 40, "WR": 40, "QB": 10, "TE": 10, "K": 10})
     players["DET"] = make_player("DET", "DEF", None, team="DET", name="Detroit Lions")

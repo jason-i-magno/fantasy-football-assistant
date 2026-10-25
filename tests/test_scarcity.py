@@ -2,8 +2,8 @@
 
 from helpers import make_player, make_pool
 
-from draftbot import scarcity
-from draftbot.scarcity import DROPOFF_CAP, candidate_score, positional_dropoffs
+from ffa.draft import scarcity
+from ffa.draft.scarcity import DROPOFF_CAP, candidate_score, positional_dropoffs
 
 
 def pool_sorted(players):

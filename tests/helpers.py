@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from draftbot.models import Player
+from ffa.models import Player
 
 DEFAULT_SETTINGS = {
     "teams": 12,

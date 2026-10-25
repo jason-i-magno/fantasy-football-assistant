@@ -14,7 +14,7 @@ from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.table import Table
 
-from . import board, ui
+from .draft import board, ui
 from .config import (
     DEFAULT_CACHE_DIR,
     Config,
@@ -22,7 +22,7 @@ from .config import (
     anthropic_credentials_available,
     load_config,
 )
-from .session import (
+from .draft.session import (
     DraftView,
     load_exclusions,
     LiveSource,
@@ -37,7 +37,7 @@ from .session import (
     recording_header,
     resolve_draft_id,
 )
-from .shortlist import context_block
+from .draft.shortlist import context_block
 from .sleeper import SleeperClient, SleeperError, SleeperRateLimited
 
 log = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
 
 
-# -- commands ------------------------------------------------------------------------
+# -- draft commands ------------------------------------------------------------------
 
 
 def _exclusions(args, config: Config) -> list[str]:
@@ -166,7 +166,7 @@ def cmd_doctor(args, console: Console) -> int:
     if problems:
         console.print(f"\n[bold red]{len(problems)} problem(s) to fix before draft day.")
         return EXIT_ERROR
-    console.print("\n[bold green]All checks passed.[/bold green] Next: run `draftbot watch` against a mock draft.")
+    console.print("\n[bold green]All checks passed.[/bold green] Next: run `ffa draft watch` against a mock draft.")
     return EXIT_OK
 
 
@@ -228,7 +228,7 @@ def cmd_recommend(args, console: Console) -> int:
             if research is None:
                 console.print(
                     f"[yellow]Research didn't finish within {wait:g}s — showing the heuristic "
-                    "shortlist. `draftbot watch` keeps research warm ahead of your pick; "
+                    "shortlist. `ffa draft watch` keeps research warm ahead of your pick; "
                     "`--wait 60` waits longer.[/yellow]"
                 )
                 view = replace(view, research_note=worker.failure(view) or "timed out")
@@ -250,7 +250,7 @@ def _research_worker(config: Config, console: Console):
         console.print("[dim]Research off: RESEARCH_BUDGET is 0.")
         return None
     try:
-        from .research import ResearchClient, ResearchWorker
+        from .draft.research import ResearchClient, ResearchWorker
 
         research_client = ResearchClient(
             config.anthropic_api_key, config.model, config.research_budget
@@ -304,7 +304,7 @@ def _print_shortlist(console: Console, view: DraftView, research=None, status: s
 def _print_startup(console: Console, session: Session, client: SleeperClient) -> None:
     raw = client.draft(session.draft_id)
     console.print(
-        f"[bold]draftbot[/bold] · {session.league_name or 'mock draft'} · draft {session.draft_id} · "
+        f"[bold]ffa draft[/bold] · {session.league_name or 'mock draft'} · draft {session.draft_id} · "
         f"you are {session.display_name}"
     )
     console.print("[dim]raw draft settings:[/dim]")
@@ -363,7 +363,7 @@ def _run_loop(
                 except Exception as exc:  # noqa: BLE001 - a live draft must not die on us
                     errors += 1
                     log.exception("Unexpected failure while rebuilding the board")
-                    note = f"internal error: {exc} (see {DEFAULT_CACHE_DIR / 'draftbot.log'})"
+                    note = f"internal error: {exc} (see {DEFAULT_CACHE_DIR / 'ffa.log'})"
                     next_poll = now + interval * min(errors, 5)
 
             frames += 1
@@ -410,7 +410,7 @@ def _check_anthropic(config: Config) -> str | None:
     except anthropic.AuthenticationError:
         return "ANTHROPIC_API_KEY was rejected (401)."
     except anthropic.NotFoundError:
-        return f"model {config.model!r} was not found — set DRAFTBOT_MODEL to a model your key can use."
+        return f"model {config.model!r} was not found — set FFA_MODEL to a model your key can use."
     except anthropic.APIError as exc:
         return f"could not reach the Anthropic API: {exc}"
     return None
@@ -418,7 +418,7 @@ def _check_anthropic(config: Config) -> str | None:
 
 def _setup_logging(verbose: bool) -> None:
     DEFAULT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    file_handler = logging.FileHandler(DEFAULT_CACHE_DIR / "draftbot.log")
+    file_handler = logging.FileHandler(DEFAULT_CACHE_DIR / "ffa.log")
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     file_handler.setLevel(logging.DEBUG)
     console_handler = RichHandler(show_path=False, show_time=False, level=logging.INFO if verbose else logging.WARNING)
@@ -434,9 +434,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="log at INFO to the console")
 
     parser = argparse.ArgumentParser(
-        prog="draftbot", parents=[common], description="Live assistant for Sleeper snake drafts."
+        prog="ffa", parents=[common], description="Fantasy football assistant for Sleeper leagues."
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    tools = parser.add_subparsers(dest="tool", required=True)
+
+    draft = tools.add_parser("draft", parents=[common], help="live assistant for Sleeper snake drafts")
+    sub = draft.add_subparsers(dest="command", required=True)
 
     slot_help = "view the board as this draft slot (mock drafts, replays, co-owner accounts)"
     user_help = "Sleeper username to run as, overriding SLEEPER_USERNAME"

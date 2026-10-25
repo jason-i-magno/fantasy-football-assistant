@@ -6,7 +6,7 @@ from datetime import date
 import httpx
 import pytest
 
-from draftbot.sleeper import (
+from ffa.sleeper import (
     BASE_URL,
     SleeperClient,
     SleeperError,

@@ -164,7 +164,7 @@ def load_config(
         league_id=league_id,
         draft_id=draft_id,
         anthropic_api_key=get("ANTHROPIC_API_KEY"),
-        model=get("DRAFTBOT_MODEL") or DEFAULT_MODEL,
+        model=get("FFA_MODEL") or DEFAULT_MODEL,
         poll_interval_seconds=poll_interval,
         research_concurrency=concurrency,
         research_budget=budget,

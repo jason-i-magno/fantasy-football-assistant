@@ -11,7 +11,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
-from .models import DraftSettings, DraftState, Pick, Player, TradedPick, to_int
+from ..models import DraftSettings, DraftState, Pick, Player, TradedPick, to_int
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ def parse_draft(raw: Mapping[str, Any]) -> DraftSettings:
         raise MalformedDraftError(f"Draft {draft_id} payload has no 'type' field.")
     if draft_type not in SUPPORTED_DRAFT_TYPES:
         raise UnsupportedDraftError(
-            f"Draft {draft_id} is a '{draft_type}' draft. draftbot only supports snake and "
+            f"Draft {draft_id} is a '{draft_type}' draft. ffa only supports snake and "
             "linear drafts; pick math for anything else would be garbage."
         )
     settings = raw.get("settings") or {}

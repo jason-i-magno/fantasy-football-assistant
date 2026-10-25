@@ -1,12 +1,12 @@
 """Generate replay_mock_12team.jsonl: a synthetic in-progress 12-team draft.
 
 Real player data (tests/fixtures/players_nfl.json), synthetic picks. Recorded drafts from a
-live mock (`draftbot watch --record`) are the real thing; this exists so the pipeline has a
+live mock (`ffa draft watch --record`) are the real thing; this exists so the pipeline has a
 deterministic in-progress board to run against offline, including the late rounds where K
 and DEF appear.
 
 The pick order is computed here from first principles rather than imported from
-draftbot.board, so the fixture stays an independent check of the snake math.
+ffa.draft.board, so the fixture stays an independent check of the snake math.
 
 Usage: python tests/fixtures/build_synthetic_replay.py
 """

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from draftbot.session import load_recording
+from ffa.draft.session import load_recording
 
 FIXTURES = Path(__file__).parent / "fixtures"
 REAL_DRAFT = FIXTURES / "sleeper_friends_2018"

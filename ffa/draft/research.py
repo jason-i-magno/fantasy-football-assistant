@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .board import pick_label, round_for_pick
-from .config import (
+from ..config import (
     RESEARCH_EFFORT,
     RESEARCH_TIMEOUT_SECONDS,
     WEB_SEARCH_MAX_USES,
@@ -312,7 +312,7 @@ class ResearchWorker:
     def __init__(self, client: ResearchClient, concurrency: int = 4):
         self._client = client
         self._pool = ThreadPoolExecutor(max_workers=max(1, concurrency),
-                                        thread_name_prefix="draftbot-research")
+                                        thread_name_prefix="ffa-research")
         self._lock = threading.Lock()
         self._results: dict[tuple, Research] = {}
         self._failures: dict[tuple, str] = {}

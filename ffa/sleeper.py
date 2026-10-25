@@ -99,7 +99,7 @@ class SleeperClient:
         self._http = http or httpx.Client(
             base_url=BASE_URL,
             timeout=timeout,
-            headers={"User-Agent": f"draftbot/{__version__}"},
+            headers={"User-Agent": f"ffa/{__version__}"},
         )
         self._max_retries = max_retries
         self._backoff = backoff_seconds

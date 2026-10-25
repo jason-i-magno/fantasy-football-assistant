@@ -6,12 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from draftbot.config import (
+from ffa.config import (
     WEB_SEARCH_TOOL_TYPE,
     WEB_SEARCH_TOOL_TYPE_LEGACY,
     web_search_tool_type,
 )
-from draftbot.research import (
+from ffa.draft.research import (
     BudgetExhausted,
     ResearchClient,
     ResearchError,
@@ -104,7 +104,7 @@ def test_unknown_confidence_is_not_trusted():
 
 
 def test_prompt_has_the_context_the_spec_requires(mock_session, recording):
-    from draftbot.session import compute_view
+    from ffa.draft.session import compute_view
 
     view = compute_view(mock_session, recording.snapshots[5])
     prompt = build_prompt(view)
@@ -129,7 +129,7 @@ def test_web_search_tool_version_matches_the_model():
 
 
 def view_for(mock_session, recording, index=5):
-    from draftbot.session import compute_view
+    from ffa.draft.session import compute_view
 
     return compute_view(mock_session, recording.snapshots[index])
 
@@ -227,7 +227,7 @@ class StubClient:
 
 
 def fake_result(pick_no):
-    from draftbot.research import PlayerVerdict, Research
+    from ffa.draft.research import PlayerVerdict, Research
 
     return Research(pick_no, "summary", "9509",
                     (PlayerVerdict("9509", "Bijan Robinson", "v", "high", "r"),), (), "m", 1.0)

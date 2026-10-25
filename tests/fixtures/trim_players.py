@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from draftbot.sleeper import filter_players  # noqa: E402
+from ffa.sleeper import filter_players  # noqa: E402
 
 TOP_RANKED = 450
 ODDBALLS = ("2315", "12530")  # Todd Gurley (ranked, no team), Travis Hunter (DB/WR)

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from draftbot.config import DEFAULT_MODEL, ConfigError, load_config, parse_env_file
+from ffa.config import DEFAULT_MODEL, ConfigError, load_config, parse_env_file
 
 GOOD = {"SLEEPER_USERNAME": "jason", "SLEEPER_LEAGUE_ID": "123456789"}
 ENV_EXAMPLE = Path(__file__).resolve().parents[1] / ".env.example"
@@ -68,14 +68,14 @@ def test_env_file_is_parsed_and_overridden_by_real_environment(tmp_path):
         "SLEEPER_USERNAME=fromfile    # trailing comment\n"
         "SLEEPER_LEAGUE_ID='123'\n"
         "export DRAFT_ID=456\n"
-        "DRAFTBOT_MODEL=\"claude-test\"\n"
+        "FFA_MODEL=\"claude-test\"\n"
         "\n"
     )
     values = parse_env_file(env)
     assert values["SLEEPER_USERNAME"] == "fromfile"
     assert values["SLEEPER_LEAGUE_ID"] == "123"
     assert values["DRAFT_ID"] == "456"
-    assert values["DRAFTBOT_MODEL"] == "claude-test"
+    assert values["FFA_MODEL"] == "claude-test"
 
     config = load_config({"SLEEPER_USERNAME": "fromenv"}, env_file=env)
     assert config.sleeper_username == "fromenv"  # real environment wins

@@ -6,9 +6,9 @@ import pytest
 from conftest import FIXTURES
 from rich.console import Console
 
-from draftbot import cli
-from draftbot.board import owner_of_pick, parse_traded_picks, traded_overrides
-from draftbot.session import (
+from ffa import cli
+from ffa.draft.board import owner_of_pick, parse_traded_picks, traded_overrides
+from ffa.draft.session import (
     ReplaySource,
     Snapshot,
     compute_view,
@@ -126,14 +126,14 @@ def test_scoring_summary_without_a_league():
 @pytest.mark.parametrize("width", [80, 100, 160])
 def test_dashboard_renders_every_snapshot(mock_session, recording, width):
     """Every recorded frame must render at every terminal width without blowing up."""
-    from draftbot import ui
+    from ffa.draft import ui
 
     console = Console(width=width, height=60, record=True, file=open("/dev/null", "w"))
     for index in range(len(recording.snapshots)):
         view = view_at(mock_session, recording, index, my_slot=8)
         console.print(ui.dashboard(view, now_ms=view.fetched_at_ms, width=width))
     output = console.export_text()
-    assert "draftbot" in output
+    assert "ffa draft" in output
     assert "Shortlist" in output
     assert "Your roster" in output
     assert max(len(line) for line in output.splitlines()) <= width
@@ -144,7 +144,7 @@ def test_dashboard_renders_every_snapshot(mock_session, recording, width):
 
 
 def test_cli_replay_single_snapshot(capsys):
-    assert cli.main(["replay", str(RECORDING), "--snapshot", "2"]) == 0
+    assert cli.main(["draft", "replay", str(RECORDING), "--snapshot", "2"]) == 0
     output = capsys.readouterr().out
     assert "Shortlist" in output
     assert "paste into Claude" in output
@@ -153,13 +153,13 @@ def test_cli_replay_single_snapshot(capsys):
 
 def test_cli_replay_runs_the_whole_recording(monkeypatch, capsys):
     monkeypatch.setattr(cli.time, "sleep", lambda _: None)
-    assert cli.main(["replay", str(RECORDING), "--delay", "0", "--slot", "8"]) == 0
+    assert cli.main(["draft", "replay", str(RECORDING), "--delay", "0", "--slot", "8"]) == 0
     assert "Draft complete" in capsys.readouterr().out
 
 
 def test_pre_draft_does_not_shout_your_pick(mock_session, recording):
     """Pick 1 is nominally on the clock for the whole pre-draft window; don't cry wolf."""
-    from draftbot import ui
+    from ffa.draft import ui
 
     view = view_at(mock_session, recording, 0, my_slot=1)
     assert view.state.is_my_turn  # the board fact is true...
@@ -220,14 +220,14 @@ def test_watch_loop_survives_an_unexpected_error(mock_session, recording, capsys
 
 
 def test_cli_replay_rejects_a_bad_snapshot_index(capsys):
-    assert cli.main(["replay", str(RECORDING), "--snapshot", "99"]) == cli.EXIT_ERROR
+    assert cli.main(["draft", "replay", str(RECORDING), "--snapshot", "99"]) == cli.EXIT_ERROR
     assert "--snapshot must be" in capsys.readouterr().out
 
 
 def test_cli_rejects_a_file_that_is_not_a_recording(tmp_path, capsys):
     bogus = tmp_path / "nope.json"
     bogus.write_text(json.dumps({"hello": "world"}))
-    assert cli.main(["replay", str(bogus)]) == cli.EXIT_ERROR
+    assert cli.main(["draft", "replay", str(bogus)]) == cli.EXIT_ERROR
     assert "recording (got None)" in capsys.readouterr().out
 
 
@@ -235,7 +235,7 @@ def test_cli_config_error_exits_two(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("SLEEPER_USERNAME", raising=False)
     monkeypatch.delenv("SLEEPER_LEAGUE_ID", raising=False)
     monkeypatch.delenv("DRAFT_ID", raising=False)
-    assert cli.main(["--env-file", str(tmp_path / "missing.env"), "doctor"]) == cli.EXIT_CONFIG
+    assert cli.main(["--env-file", str(tmp_path / "missing.env"), "draft", "doctor"]) == cli.EXIT_CONFIG
     assert "SLEEPER_USERNAME" in capsys.readouterr().out
 
 
@@ -246,10 +246,10 @@ def test_user_flag_overrides_the_configured_username(tmp_path, monkeypatch):
     for name in ("SLEEPER_USERNAME", "SLEEPER_LEAGUE_ID", "DRAFT_ID"):
         monkeypatch.delenv(name, raising=False)
 
-    overridden = cli._parse_args(["--env-file", str(env), "shortlist", "--user", "manager_two"])
+    overridden = cli._parse_args(["--env-file", str(env), "draft", "shortlist", "--user", "manager_two"])
     assert cli._config_for(overridden).sleeper_username == "manager_two"
 
-    default = cli._parse_args(["--env-file", str(env), "watch"])
+    default = cli._parse_args(["--env-file", str(env), "draft", "watch"])
     assert cli._config_for(default).sleeper_username == "manager_one"
     # Everything else still comes from the file.
     assert cli._config_for(overridden).league_id == "123456789012345678"
@@ -258,7 +258,7 @@ def test_user_flag_overrides_the_configured_username(tmp_path, monkeypatch):
 @pytest.mark.parametrize("height", [24, 30, 45])
 def test_short_terminal_never_drops_a_candidate_silently(mock_session, recording, height):
     """A candidate the terminal ate looks exactly like one the heuristic rejected."""
-    from draftbot import ui
+    from ffa.draft import ui
 
     view = view_at(mock_session, recording, 5)
     names = [c.player.name for c in view.shortlist.candidates]

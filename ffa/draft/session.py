@@ -14,14 +14,14 @@ from pathlib import Path
 from typing import Any
 
 from . import board, needs
-from .config import Config
-from .models import DraftState, Pick, Player, to_int
+from ..config import Config
+from ..models import DraftState, Pick, Player, to_int
 from .shortlist import Shortlist, build_shortlist
-from .sleeper import SleeperClient
+from ..sleeper import SleeperClient
 
 log = logging.getLogger(__name__)
 
-RECORDING_FORMAT = "draftbot-recording/1"
+RECORDING_FORMAT = "draftbot-recording/1"  # the project's old name; existing recordings carry it
 RECENT_PICKS_SHOWN = 10  # positional runs are the signal search_rank can't capture
 EXCLUDE_FILE = "exclude.txt"  # one name or player_id per line; re-read on every poll
 ACTIVE_DRAFT_STATUSES = ("pre_draft", "drafting", "paused")
@@ -313,7 +313,7 @@ def load_recording(path: Path | str) -> Recording:
         header, entries = lines[0], lines[1:]
     else:
         if not isinstance(payload, dict):
-            raise SessionError(f"{path} is not a draftbot recording.")
+            raise SessionError(f"{path} is not a draft recording.")
         header = {k: v for k, v in payload.items() if k != "snapshots"}
         entries = payload.get("snapshots") or []
     if header.get("format") != RECORDING_FORMAT:

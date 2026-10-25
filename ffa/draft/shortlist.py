@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from .board import pick_label, round_for_pick
-from .models import FANTASY_POSITIONS, DraftState, Pick, Player
+from ..models import FANTASY_POSITIONS, DraftState, Pick, Player
 from .needs import RosterFill, block_reason, need_weight
 from .scarcity import Dropoff, candidate_score, positional_dropoffs
 

@@ -15,7 +15,7 @@ the shortlist is for: take this position now, or wait a round?
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from .models import Player
+from ..models import Player
 
 # ---- Tunable weights ---------------------------------------------------------------
 # The score is an adjusted rank in search_rank units (about one pick of ADP each).

@@ -1,5 +1,8 @@
 # Sleeper Draft Assistant — Build Spec
 
+> Written when the project was `draftbot`. The package is now `ffa`, the draft modules live
+> in `ffa/draft/`, and the commands are `ffa draft <command>`.
+
 **Read this entire file before writing any code.**
 
 Reference: the Sleeper API is documented at https://docs.sleeper.com. It is a free,

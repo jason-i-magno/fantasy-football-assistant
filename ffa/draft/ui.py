@@ -7,7 +7,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .board import pick_deadline_ms, pick_label, round_for_pick, seconds_remaining
-from .models import Player
+from ..models import Player
 from .needs import NEED_FLEX, NEED_STARTER
 from .session import DraftView
 from .shortlist import Shortlist, likely_gone_label, plural
@@ -106,7 +106,7 @@ def header_panel(view: DraftView, now_ms: int, note: str | None = None) -> Panel
         Group(*lines),
         border_style="red" if mine else "blue",
         style="on grey15" if mine else "",
-        title="[bold]draftbot[/bold]",
+        title="[bold]ffa draft[/bold]",
         title_align="left",
     )
 
@@ -267,7 +267,7 @@ def shortlist_table(view: DraftView, research=None, max_rows: int | None = None)
         )
     caption = Text(f"for pick {_pick_text(shortlist.decision_pick_no, teams)}", style="dim")
     if hidden:
-        caption.append(f"  (+{hidden} more — taller terminal, or run `draftbot shortlist`)",
+        caption.append(f"  (+{hidden} more — taller terminal, or run `ffa draft shortlist`)",
                        style="bold yellow")
     if shortlist.defense_options:
         return Group(table, caption, defense_lines(shortlist))

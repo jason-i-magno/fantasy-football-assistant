@@ -5,7 +5,7 @@ import pytest
 from conftest import FIXTURES
 from helpers import make_player
 
-from draftbot.needs import (
+from ffa.draft.needs import (
     NEED_BENCH,
     NEED_FLEX,
     NEED_STARTER,
