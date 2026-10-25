@@ -3,8 +3,10 @@
 import argparse
 import json
 import logging
+import os
 import time
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import Console
@@ -14,6 +16,7 @@ from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.table import Table
 
+from . import espn
 from .draft import board, ui
 from .config import (
     DEFAULT_CACHE_DIR,
@@ -39,6 +42,8 @@ from .draft.session import (
 )
 from .draft.shortlist import context_block
 from .sleeper import SleeperClient, SleeperError, SleeperRateLimited
+from .waivers import ui as waivers_ui
+from .waivers.status import UnsupportedWaivers, build_report, select_statuses
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +56,7 @@ RATE_LIMIT_BACKOFF_SECONDS = 30.0
 # burn the clock. `watch` keeps research warm, so a warm result returns instantly.
 RECOMMEND_DEADLINE_SECONDS = 5.0
 FRAME_SECONDS = 1.0  # redraw (and tick the countdown) this often between polls
+WAIVERS_SHOWN = 25
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -66,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     except (board.UnsupportedDraftError, board.MalformedDraftError) as exc:
         console.print(f"[bold red]{exc}")
         return EXIT_ERROR
-    except (SleeperError, SessionError) as exc:
+    except (SleeperError, SessionError, espn.ESPNError, UnsupportedWaivers) as exc:
         console.print(f"[bold red]{exc}")
         return EXIT_ERROR
     except KeyboardInterrupt:
@@ -80,16 +86,6 @@ def main(argv: list[str] | None = None) -> int:
 def _exclusions(args, config: Config) -> list[str]:
     """--exclude plus anything in cache/exclude.txt."""
     return [*(getattr(args, "exclude", None) or []), *load_exclusions(config.cache_dir)]
-
-
-def _config_for(args) -> Config:
-    """Load config, letting --user stand in for SLEEPER_USERNAME.
-
-    One checkout, two managers: each runs their own `watch` against the same draft.
-    """
-    config = load_config(env_file=args.env_file)
-    user = getattr(args, "user", None)
-    return replace(config, sleeper_username=user) if user else config
 
 
 def cmd_doctor(args, console: Console) -> int:
@@ -285,7 +281,47 @@ def cmd_replay(args, console: Console) -> int:
     )
 
 
+# -- waivers command -----------------------------------------------------------------
+
+
+def cmd_waivers(args, console: Console) -> int:
+    """Which unrostered players are free agents and which are on waivers, right now."""
+    config = _config_for(args)
+    if config.league_id is None:
+        raise ConfigError(["`ffa waivers` needs a league: pass --league or set SLEEPER_LEAGUE_ID."])
+    report = build_report(
+        SleeperClient(config.cache_dir), config.league_id, datetime.now(timezone.utc), espn.week_kickoffs
+    )
+    shown = select_statuses(
+        report.statuses,
+        positions=args.pos or (),
+        names=args.player or (),
+        limit=None if args.player else args.limit,
+    )
+    if args.player and not shown:
+        console.print(f"[yellow]No player matches {', '.join(args.player)}.")
+        return EXIT_ERROR
+    if args.json:
+        print(json.dumps(waivers_ui.report_json(report, shown), indent=2))
+    else:
+        console.print(waivers_ui.header(report))
+        console.print(waivers_ui.table(shown, report.now))
+    return EXIT_OK
+
+
 # -- shared plumbing -----------------------------------------------------------------
+
+
+def _config_for(args) -> Config:
+    """Load config, letting --user stand in for SLEEPER_USERNAME and --league for SLEEPER_LEAGUE_ID.
+
+    One checkout, two managers: each runs their own `watch` against the same draft.
+    """
+    league = getattr(args, "league", None)
+    environ = {**os.environ, "SLEEPER_LEAGUE_ID": league} if league else None
+    config = load_config(environ, env_file=args.env_file)
+    user = getattr(args, "user", None)
+    return replace(config, sleeper_username=user) if user else config
 
 
 def _print_shortlist(console: Console, view: DraftView, research=None, status: str = "off") -> None:
@@ -481,6 +517,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     replay.add_argument("--delay", type=float, default=1.0, help="seconds between frames")
     replay.add_argument("--slot", type=int, help=slot_help)
     replay.set_defaults(func=cmd_replay)
+
+    waivers = tools.add_parser("waivers", parents=[common],
+                               help="which unrostered players are free agents and which are on waivers")
+    waivers.add_argument("--league", help="Sleeper league ID, overriding SLEEPER_LEAGUE_ID")
+    waivers.add_argument("--pos", action="append", metavar="POS", help="only these positions (repeatable)")
+    waivers.add_argument("--player", action="append", metavar="NAME",
+                         help="look players up by name, rostered or not (repeatable)")
+    waivers.add_argument("--limit", type=int, default=WAIVERS_SHOWN,
+                         help="rows to show when not looking players up (default %(default)s)")
+    waivers.add_argument("--json", action="store_true", help="print JSON instead of a table")
+    waivers.set_defaults(func=cmd_waivers)
 
     args = parser.parse_args(argv)
     args.env_file = getattr(args, "env_file", Path(".env"))

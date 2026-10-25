@@ -203,3 +203,22 @@ def test_player_fetch_failure_without_a_cache_is_fatal(tmp_path):
     client, _ = make_client(tmp_path, {"/v1/players/nfl": [(500, None)] * 5}, max_retries=1)
     with pytest.raises(SleeperError):
         client.players()
+
+
+def test_league_endpoints_for_waivers_are_fetched_once_per_run(tmp_path):
+    client, recorder = make_client(tmp_path, {
+        "/v1/league/9/rosters": (200, [{"roster_id": 1, "players": ["1"]}]),
+        "/v1/league/9/transactions/7": (200, [{"type": "free_agent", "drops": {"1": 1}}]),
+        "/v1/state/nfl": {"season": "2026", "season_type": "regular", "week": 7},
+    })
+    for _ in range(2):
+        assert client.rosters("9")[0]["roster_id"] == 1
+        assert client.transactions("9", 7)[0]["type"] == "free_agent"
+        assert client.nfl_state()["week"] == 7
+    assert recorder.calls == ["/v1/league/9/rosters", "/v1/league/9/transactions/7", "/v1/state/nfl"]
+
+
+def test_unusable_nfl_state_is_an_error(tmp_path):
+    client, _ = make_client(tmp_path, {"/v1/state/nfl": {"week": 7}})
+    with pytest.raises(SleeperError, match="NFL state"):
+        client.nfl_state()
