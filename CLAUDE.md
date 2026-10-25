@@ -20,6 +20,15 @@ No linter, formatter or type checker is configured. Config comes from `./.env` (
 (`.github/workflows/tests.yml`, pytest on Python 3.11 and 3.14) must pass to merge. CI runs
 with `--locked`, so a dependency change must ship with its updated `uv.lock`.
 
+## Privacy
+
+The repo is public. Never put the user's real league names, league or draft IDs, Sleeper
+usernames, team names, or real transactions into files, commit messages, or PR/issue text;
+write "a real league" or "the `.env` league" instead. Check before posting: editing a PR
+description afterwards still leaves the original in GitHub's public edit history. If a
+local check blocks a commit or `gh` command for a sensitive term, rewrite the text rather
+than working around the check.
+
 ## Layout
 
 The CLI is `ffa <tool> <command>`. There are two tools: `ffa draft` (a live Sleeper
@@ -79,9 +88,9 @@ custom daily waivers raise `UnsupportedWaivers` instead of guessing.
 - Tunable shortlist weights are named constants at the top of `draft/scarcity.py`.
 - Recordings are JSON Lines (header, then snapshots) tagged `"draftbot-recording/1"`. Keep
   that tag: existing recordings depend on it.
-- The repo is public. `cache/` (gitignored) holds the player map, logs (`ffa.log`) and real
-  draft recordings containing real Sleeper usernames and league IDs. Scrub them before
-  turning one into a test fixture.
+- `cache/` (gitignored) holds the player map, logs (`ffa.log`) and real draft recordings
+  containing real Sleeper usernames and league IDs. Scrub them before turning one into a
+  test fixture.
 
 ## Tests
 
