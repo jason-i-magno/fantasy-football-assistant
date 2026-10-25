@@ -15,6 +15,10 @@ uv run ffa draft doctor                          # live: validate .env, resolve 
 No linter, formatter or type checker is configured. Config comes from `./.env` (see
 `.env.example`); real environment variables win over the file.
 
+`main` is protected: changes land through pull requests, and the `tests` check
+(`.github/workflows/tests.yml`, pytest on Python 3.11 and 3.14) must pass to merge. CI runs
+with `--locked`, so a dependency change must ship with its updated `uv.lock`.
+
 ## Layout
 
 The CLI is `ffa <tool> <command>`. `ffa draft` (a live Sleeper snake-draft assistant) is the
