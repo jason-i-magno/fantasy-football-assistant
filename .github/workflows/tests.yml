@@ -1,0 +1,21 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # The job name is the required status check on main; rename it in the ruleset too.
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: pytest on Python 3.11 (the requires-python floor)
+        run: uv run --locked --python 3.11 pytest
+      - name: pytest on Python 3.14
+        run: uv run --locked --python 3.14 pytest
