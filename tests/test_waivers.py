@@ -1,4 +1,4 @@
-"""Waiver status: the after-game lock, the post-drop hold, and the `ffa waivers` command."""
+"""Waiver status: the three lock rules, and the `ffa waivers` command."""
 
 import json
 from datetime import datetime, timedelta, timezone
@@ -20,6 +20,7 @@ from ffa.waivers.status import (
     recent_drops,
     roster_owners,
     select_statuses,
+    week_closed_at,
 )
 
 ET = ZoneInfo("America/New_York")
@@ -28,6 +29,9 @@ RULES = WaiverRules.from_settings({"waiver_day_of_week": 2, "waiver_clear_days":
 WEEK7_CLEAR = datetime(2026, 10, 28, 0, 5, tzinfo=PT)  # Wednesday 12:05 AM Pacific
 SAT_NIGHT = datetime(2026, 10, 24, 23, 0, tzinfo=ET)
 THURSDAY_GAME = datetime(2026, 10, 22, 20, 15, tzinfo=ET)
+WEEK6_LAST_GAME = datetime(2026, 10, 19, 20, 15, tzinfo=ET)  # Monday night, already cleared
+WEEK7_LAST_GAME = datetime(2026, 10, 26, 20, 15, tzinfo=ET)  # Monday night, closes week 7
+TUESDAY = datetime(2026, 10, 27, 20, 0, tzinfo=ET)  # after week 7, before the clear
 
 
 def millis(moment: datetime) -> int:
@@ -90,8 +94,8 @@ def test_player_whose_game_is_still_ahead_is_a_free_agent():
 
 
 def test_last_weeks_lock_has_cleared():
-    last_monday = datetime(2026, 10, 19, 20, 15, tzinfo=ET)
-    assert classify(make_player("1", "RB", 10), RULES, SAT_NIGHT, last_kickoff=last_monday).status == FREE_AGENT
+    status = classify(make_player("1", "RB", 10), RULES, SAT_NIGHT, last_kickoff=WEEK6_LAST_GAME)
+    assert status.status == FREE_AGENT
 
 
 def test_recent_drop_is_held_47_hours():
@@ -107,15 +111,29 @@ def test_drop_older_than_the_hold_is_a_free_agent():
     assert classify(make_player("1", "RB", 10), RULES, SAT_NIGHT, dropped_at=dropped).status == FREE_AGENT
 
 
-def test_both_rules_clear_at_whichever_ends_later():
+def test_rules_clear_at_whichever_ends_later():
     player = make_player("1", "RB", 10)
     early_drop = classify(player, RULES, SAT_NIGHT, last_kickoff=THURSDAY_GAME, dropped_at=SAT_NIGHT)
     assert early_drop.clears_at == WEEK7_CLEAR
     assert early_drop.kicked_off and early_drop.dropped_at  # both reasons reported
 
-    tuesday = datetime(2026, 10, 27, 20, 0, tzinfo=ET)
-    late_drop = classify(player, RULES, tuesday, last_kickoff=THURSDAY_GAME, dropped_at=tuesday)
-    assert late_drop.clears_at == tuesday + timedelta(hours=47)
+    late_drop = classify(player, RULES, TUESDAY, last_kickoff=THURSDAY_GAME, dropped_at=TUESDAY)
+    assert late_drop.clears_at == TUESDAY + timedelta(hours=47)
+
+
+def test_bye_week_player_is_on_waivers_once_the_week_is_over():
+    """Rule 3. His own team never kicked off, so rules 1 and 2 both say free agent."""
+    status = classify(make_player("1", "RB", 10), RULES, TUESDAY, week_closed=WEEK7_LAST_GAME)
+    assert status.status == WAIVERS
+    assert status.clears_at == WEEK7_CLEAR
+    assert status.week_closed == WEEK7_LAST_GAME
+    assert status.kicked_off is None and status.dropped_at is None
+
+
+def test_bye_week_player_is_a_free_agent_while_the_week_still_has_games():
+    """The other direction: mid-week he is genuinely addable, and really was added."""
+    status = classify(make_player("1", "RB", 10), RULES, SAT_NIGHT, week_closed=WEEK6_LAST_GAME)
+    assert status.status == FREE_AGENT
 
 
 def test_rostered_player_is_never_a_free_agent():
@@ -131,6 +149,19 @@ def test_last_kickoffs_keeps_each_teams_latest_past_kickoff():
     week7 = {"NE": THURSDAY_GAME, "PIT": datetime(2026, 10, 25, 9, 30, tzinfo=ET)}
     latest = last_kickoffs([week6, week7], SAT_NIGHT)
     assert latest == {"NE": THURSDAY_GAME, "BUF": week6["BUF"]}  # PIT hasn't kicked off
+
+
+def test_week_closed_at_takes_the_latest_week_whose_games_have_all_started():
+    week6 = {"NE": datetime(2026, 10, 18, 13, 0, tzinfo=ET), "BUF": WEEK6_LAST_GAME}
+    week7 = {"NE": THURSDAY_GAME, "PIT": WEEK7_LAST_GAME}  # BUF on bye, absent
+    # On Saturday week 7 still has games to come, so only week 6 has closed.
+    assert week_closed_at([week6, week7], SAT_NIGHT) == WEEK6_LAST_GAME
+    assert week_closed_at([week6, week7], TUESDAY) == WEEK7_LAST_GAME
+
+
+@pytest.mark.parametrize("weeks", [[], [{}], [{}, {}]])
+def test_week_closed_at_is_none_without_a_schedule(weeks):
+    assert week_closed_at(weeks, SAT_NIGHT) is None
 
 
 def test_recent_drops_skips_failed_and_old_transactions_and_keeps_the_latest():
@@ -180,10 +211,12 @@ def test_select_statuses_defaults_to_unrostered_players_on_an_nfl_team_by_rank()
 class FakeSleeper:
     """Duck-typed SleeperClient over canned payloads."""
 
-    def __init__(self, now: datetime, *, season_type: str = "regular"):
+    def __init__(self, now: datetime, *, season_type: str = "regular",
+                 drop_age: timedelta = timedelta(hours=3)):
         self.season_type = season_type
         self.transaction_weeks: list[int] = []
         self.now = now
+        self.drop_age = drop_age
 
     def league(self, league_id):
         return {"name": "Test League", "settings": {"waiver_day_of_week": 2, "waiver_clear_days": 2,
@@ -202,7 +235,7 @@ class FakeSleeper:
         self.transaction_weeks.append(week)
         if week != 7:
             return []
-        return [{"status": "complete", "status_updated": millis(self.now - timedelta(hours=3)),
+        return [{"status": "complete", "status_updated": millis(self.now - self.drop_age),
                  "drops": {"30": 1}}]
 
     def players(self):
@@ -225,6 +258,14 @@ def fake_kickoffs(now: datetime):
     return kickoffs_for
 
 
+def fake_kickoffs_week_over(now: datetime):
+    """Week 7 is done: NE played Thursday, PIT closed it last night, BUF was on bye."""
+    def kickoffs_for(season, week):
+        assert season == 2026
+        return {"NE": now - timedelta(days=5), "PIT": WEEK7_LAST_GAME} if week == 7 else {}
+    return kickoffs_for
+
+
 def test_build_report_classifies_every_player():
     now = SAT_NIGHT
     client = FakeSleeper(now)
@@ -238,6 +279,24 @@ def test_build_report_classifies_every_player():
     assert by_id["40"].status == FREE_AGENT
     assert report.locked_teams == {"NE": WEEK7_CLEAR}
     assert sorted(client.transaction_weeks) == [6, 7, 8]
+
+
+def test_build_report_leaves_nobody_a_free_agent_once_the_week_is_over():
+    """The regression this rule exists for: a bye-week player wrongly called addable.
+
+    `drop_age` puts the canned drop outside the hold, so the only rule that can put the
+    bye-week player on waivers is the week-closed lock.
+    """
+    client = FakeSleeper(TUESDAY, drop_age=timedelta(hours=60))
+    report = build_report(client, "123", TUESDAY, fake_kickoffs_week_over(TUESDAY))
+
+    by_id = {s.player.player_id: s for s in report.statuses}
+    bye = by_id["30"]  # BUF: on bye in week 7, and its drop has aged out
+    assert bye.status == WAIVERS
+    assert bye.kicked_off is None and bye.dropped_at is None  # neither older rule applies
+    assert bye.week_closed == WEEK7_LAST_GAME and bye.clears_at == WEEK7_CLEAR
+    assert report.week_closed == WEEK7_LAST_GAME
+    assert [s.player.player_id for s in report.statuses if s.status == FREE_AGENT] == []
 
 
 def test_build_report_refuses_outside_the_regular_season():

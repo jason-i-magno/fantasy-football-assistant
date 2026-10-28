@@ -30,6 +30,16 @@ def header(report: WaiverReport) -> RenderableType:
         Text(f"After-game waivers next clear {fmt_time(next_clear)} (12:05 AM Pacific). "
              f"Dropped players are held {hold_hours:g}h.", style="dim"),
     ]
+    week_clear = (
+        report.rules.after_game_clear(report.week_closed) if report.week_closed is not None else None
+    )
+    week_over = week_clear is not None and week_clear > report.now
+    if week_over:
+        lines.append(Text.assemble(
+            ("Every unrostered player is on waivers", "yellow"),
+            f" until {fmt_time(week_clear)}: the week's last game kicked off "
+            f"{fmt_time(report.week_closed)}, so teams on bye are locked too.",
+        ))
     by_clear: dict[datetime, list[str]] = {}
     for team, clear in report.locked_teams.items():
         by_clear.setdefault(clear, []).append(team)
@@ -37,7 +47,7 @@ def header(report: WaiverReport) -> RenderableType:
         lines.append(Text.assemble(
             "Locked after kickoff: ", (", ".join(sorted(teams)), "yellow"), f" until {fmt_time(clear)}"
         ))
-    if not report.locked_teams:
+    if not report.locked_teams and not week_over:
         lines.append(Text("No team is locked right now: no game has kicked off since the last clear."))
     return Group(*lines)
 
@@ -63,6 +73,8 @@ def table(statuses: Sequence[WaiverStatus], now: datetime) -> Table:
             why.append(f"game kicked off {fmt_time(s.kicked_off)}")
         if s.dropped_at is not None:
             why.append(f"dropped {fmt_time(s.dropped_at)}")
+        if s.week_closed is not None:
+            why.append(f"week's last game kicked off {fmt_time(s.week_closed)}")
         grid.add_row(s.player.name, s.player.position, s.player.team or "FA", status, clears, "; ".join(why))
     return grid
 
@@ -78,6 +90,7 @@ def report_json(report: WaiverReport, statuses: Sequence[WaiverStatus]) -> dict[
         "next_after_game_clear": iso(report.rules.after_game_clear(report.now)),
         "drop_hold_hours": report.rules.drop_hold.total_seconds() / 3600,
         "locked_teams": {team: iso(clear) for team, clear in sorted(report.locked_teams.items())},
+        "week_closed": iso(report.week_closed),
         "players": [
             {
                 "player_id": s.player.player_id,
@@ -88,6 +101,7 @@ def report_json(report: WaiverReport, statuses: Sequence[WaiverStatus]) -> dict[
                 "clears_at": iso(s.clears_at),
                 "kicked_off": iso(s.kicked_off),
                 "dropped_at": iso(s.dropped_at),
+                "week_closed": iso(s.week_closed),
                 "rostered_by": s.rostered_by,
             }
             for s in statuses
