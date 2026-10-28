@@ -70,11 +70,15 @@ a model, update `WEB_SEARCH_MODERN_MODELS` in `config.py`.
 
 An unrostered player is not necessarily a free agent. Before telling the user a player can
 be added, run `ffa waivers --player NAME` (add `--league ID` for a league other than the
-`.env` one). `ffa/waivers/status.py` applies two rules, clearing at whichever ends later:
-the after-game lock (from his team's kickoff until the league's clear day, 12:05 AM Pacific)
-and the post-drop hold (`waiver_clear_days` less an hour). Its docstring has the details and
-how they were verified. Only `waiver_day_of_week: 2` has been checked against real claims;
-custom daily waivers raise `UnsupportedWaivers` instead of guessing.
+`.env` one). `ffa/waivers/status.py` applies three rules, clearing at whichever ends last:
+the after-game lock (from his team's kickoff until the league's clear day, 12:05 AM Pacific),
+the post-drop hold (`waiver_clear_days` less an hour), and the week-closed lock (once the
+week's last game has kicked off, everyone is on waivers until the clear, teams on bye
+included). Its docstring has the details and how they were verified. Only
+`waiver_day_of_week: 2` has been checked against real claims; custom daily waivers raise
+`UnsupportedWaivers` instead of guessing. Rule 3 exists because rules 1 and 2 were verified
+only against adds that happened, which cannot catch a player wrongly reported as a free
+agent: check any new rule in that direction too.
 
 ## Constraints and gotchas
 

@@ -1,16 +1,26 @@
 """Free agent or on waivers: Sleeper's waiver rules, applied to one league right now.
 
 Sleeper's public API has no waiver-status field, and an unrostered player is not
-necessarily a free agent. With custom daily waivers off, two rules put him on waivers, and
-he clears at whichever ends later:
+necessarily a free agent. With custom daily waivers off, three rules put him on waivers,
+and he clears at whichever ends last:
 
 1. After-game lock: once his NFL team kicks off, he stays on waivers until the league's
    clear day at 12:05 AM Pacific (`waiver_day_of_week`; "Tue After Day" clears Wednesday).
 2. Post-drop hold: a dropped player stays on waivers for `waiver_clear_days` days less an
    hour (Sleeper's "2 days" is 47 hours), and claims on him process when the hold ends.
+3. Week-closed lock: once the last game of an NFL week has kicked off, *every* unrostered
+   player is on waivers until the clear, players whose team was on bye included.
 
-Both rules were checked against a season of real transactions in two leagues: no free-agent
-add fell inside either window, and post-drop claims processed 47.0 hours after the drop.
+Rules 1 and 2 were checked against a season of real transactions in two leagues: no
+free-agent add fell inside either window, and post-drop claims processed 47.0 hours after
+the drop. That test only catches a window that is too wide -- a player wrongly called a
+free agent produces no transaction to find, so it cannot catch a window that is too narrow.
+
+Rule 3 is what that blind spot hid. Rule 1 keys the lock to the player's own team, so a
+team on bye has no kickoff, never locks, and looks addable all week. Real claim records say
+otherwise: bye-week players do go through the weekly waiver run, with no drop anywhere near
+the hold to explain it. Checked in the other direction too -- while a week still has games
+to come, a bye-week player really is a free agent, and adds of them do complete.
 """
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -70,6 +80,7 @@ class WaiverStatus:
     clears_at: datetime | None = None  # when a player on waivers becomes a free agent
     kicked_off: datetime | None = None  # set when the after-game lock applies
     dropped_at: datetime | None = None  # set when the post-drop hold applies
+    week_closed: datetime | None = None  # set when the week-closed lock applies
     rostered_by: str | None = None
 
 
@@ -80,23 +91,32 @@ def classify(
     *,
     last_kickoff: datetime | None = None,
     dropped_at: datetime | None = None,
+    week_closed: datetime | None = None,
     rostered_by: str | None = None,
 ) -> WaiverStatus:
-    """Apply both rules. `last_kickoff` is his team's most recent kickoff at or before now."""
+    """Apply all three rules.
+
+    `last_kickoff` is his team's most recent kickoff at or before now, and `week_closed` the
+    most recent week-closing kickoff from `week_closed_at` -- the same for every player.
+    """
     if rostered_by is not None:
         return WaiverStatus(player, ROSTERED, rostered_by=rostered_by)
     game_clear = rules.after_game_clear(last_kickoff) if last_kickoff is not None else None
     drop_clear = dropped_at + rules.drop_hold if dropped_at is not None else None
+    week_clear = rules.after_game_clear(week_closed) if week_closed is not None else None
     locked = game_clear is not None and game_clear > now
     held = drop_clear is not None and drop_clear > now
-    if not (locked or held):
+    closed = week_clear is not None and week_clear > now
+    if not (locked or held or closed):
         return WaiverStatus(player, FREE_AGENT)
+    reasons = ((game_clear, locked), (drop_clear, held), (week_clear, closed))
     return WaiverStatus(
         player,
         WAIVERS,
-        clears_at=max(clear for clear, on in ((game_clear, locked), (drop_clear, held)) if on),
+        clears_at=max(clear for clear, on in reasons if on),
         kicked_off=last_kickoff if locked else None,
         dropped_at=dropped_at if held else None,
+        week_closed=week_closed if closed else None,
     )
 
 
@@ -108,6 +128,18 @@ def last_kickoffs(weeks: Iterable[Mapping[str, datetime]], now: datetime) -> dic
             if kickoff <= now and (team not in latest or kickoff > latest[team]):
                 latest[team] = kickoff
     return latest
+
+
+def week_closed_at(weeks: Iterable[Mapping[str, datetime]], now: datetime) -> datetime | None:
+    """When the last game of a week kicked off, for the latest week where that has happened.
+
+    Each argument is one week's `{team: kickoff}`, teams on bye absent, so the last kickoff
+    is the point where every team playing that week is locked and only bye teams are left.
+    Returns None until some week's games have all started. An already-cleared week-closing
+    is harmless: the caller runs it through `after_game_clear` like any other kickoff.
+    """
+    started = [last for week in weeks if week and (last := max(week.values())) <= now]
+    return max(started) if started else None
 
 
 def recent_drops(transactions: Iterable[Mapping[str, Any]], since: datetime) -> dict[str, datetime]:
@@ -182,6 +214,7 @@ class WaiverReport:
     rules: WaiverRules
     statuses: list[WaiverStatus]  # every fantasy-relevant player, rostered ones included
     locked_teams: dict[str, datetime]  # team -> lock clear, for teams locked right now
+    week_closed: datetime | None = None  # the week-closing kickoff, if one has happened
 
 
 def build_report(
@@ -203,7 +236,10 @@ def build_report(
     # inside the hold can sit in the previous week's list. Last week's late games can still
     # hold a lock, and next week's are fetched in case Sleeper's week hasn't flipped yet.
     weeks = [w for w in (week - 1, week, week + 1) if 1 <= w <= LAST_REGULAR_WEEK]
-    kickoffs = last_kickoffs((kickoffs_for(season, w) for w in weeks), now)
+    # Rule 3 needs each week's schedule whole, so these stay unmerged for `week_closed_at`.
+    schedules = [kickoffs_for(season, w) for w in weeks]
+    kickoffs = last_kickoffs(schedules, now)
+    closed = week_closed_at(schedules, now)
     drops = recent_drops(
         (t for w in weeks for t in client.transactions(league_id, w)), since=now - rules.drop_hold
     )
@@ -221,7 +257,8 @@ def build_report(
             now,
             last_kickoff=kickoffs.get(player.team) if player.team else None,
             dropped_at=drops.get(player.player_id),
+            week_closed=closed,
             rostered_by=owners.get(player.player_id),
         ))
     locked = {team: clear for team, kickoff in kickoffs.items() if (clear := rules.after_game_clear(kickoff)) > now}
-    return WaiverReport(league.get("name") or league_id, week, now, rules, statuses, locked)
+    return WaiverReport(league.get("name") or league_id, week, now, rules, statuses, locked, closed)
