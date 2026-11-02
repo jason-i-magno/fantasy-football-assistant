@@ -1,9 +1,10 @@
 # fantasy-football-assistant
 
-Terminal tools for Sleeper fantasy football leagues, run as `ffa <tool> <command>`:
+Tools for Sleeper fantasy football leagues, run as `ffa <tool> [command]`:
 
 - `ffa draft` — a live snake-draft assistant.
 - `ffa waivers` — which unrostered players are free agents, and which are on waivers until when.
+- `ffa serve` — both of those as a web app, for the phone in your hand during the draft.
 
 ## Setup
 
@@ -98,18 +99,55 @@ uv run ffa waivers --league ID --json    # another league than SLEEPER_LEAGUE_ID
 ```
 
 Sleeper's API has no waiver-status field, and an unrostered player isn't necessarily a free
-agent. With custom daily waivers off, two rules put him on waivers, and he clears at whichever
-ends later:
+agent. With custom daily waivers off, three rules put him on waivers, and he clears at
+whichever ends last:
 
 1. **After-game lock** — once his NFL team kicks off, he's on waivers until the league's clear
    day at 12:05 AM Pacific (`waiver_day_of_week`; "Tue After Day" clears Wednesday). Teams on
    bye aren't locked.
 2. **Post-drop hold** — a dropped player stays on waivers for `waiver_clear_days` days less an
    hour (Sleeper's "2 days" is 47 hours), and claims on him process when the hold ends.
+3. **Week-closed lock** — once the last game of an NFL week has kicked off, *everyone*
+   unrostered is on waivers until the clear, teams on bye included. Rule 1 keys the lock to
+   the player's own team, so without this one a bye-week player looks addable all week; real
+   claim records say he isn't.
 
-Both rules were checked against a season of real transactions. Kickoff times come from ESPN's
+Rules 1 and 2 were checked against a season of real transactions, and rule 3 against the
+bye-week claims that blind spot hid. Kickoff times come from ESPN's
 public scoreboard API, since Sleeper doesn't publish them. Leagues using custom daily waivers
 are refused rather than guessed at. Times print in your machine's timezone.
+
+## Phone app
+
+```bash
+uv run ffa serve                 # prints the URL to open on your phone, same wi-fi
+uv run ffa serve --token SECRET  # require a token (or set FFA_WEB_TOKEN in .env)
+uv run ffa serve --replay tests/fixtures/replay_mock_12team.jsonl   # try it with no draft on
+```
+
+`ffa serve` puts both tools behind a small web app: the board, clock, shortlist,
+recommendation and your roster on one tab, the waiver list on the other. It binds to every
+interface so the phone can reach it, and prints the LAN URL to type in.
+
+- **The same pipeline.** Each poll runs `compute_view` exactly as `watch` does, and the page
+  renders that `DraftView` as JSON — the phone and the terminal can't disagree, because they
+  are the same numbers.
+- **One poll serves every screen.** The board is fetched at `POLL_INTERVAL_SECONDS` and
+  shared; five open tabs are still one request, and nothing is polled while no screen is
+  open. Waiver reports are rebuilt at most once a minute, each from a fresh client so
+  rosters and transactions don't go stale on a server that stays up for days.
+- **Read-only, like everything else here.** Sleeper's API can't be written to and the app has
+  no route that changes anything, so the worst someone on your network can do is read your
+  league. If that matters, `--token SECRET` locks it: open `http://host:8765/?token=SECRET`
+  once and the browser keeps the token for later requests.
+- **Research** behaves as it does in `watch`: prefetched in the background during other
+  managers' picks, with the card saying where it has got to, and the heuristic shortlist
+  standing on its own whenever research is off or slow.
+- **Copy context for Claude** hands you the same markdown block `ffa draft shortlist` prints,
+  to paste into the Claude app on your phone.
+
+No new dependencies: a stdlib WSGI server, three static files, no build step. The tests drive
+it in-process through httpx's WSGI transport, so they stay offline like the rest of the suite.
 
 ## Tests
 

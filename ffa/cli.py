@@ -22,7 +22,6 @@ from .config import (
     DEFAULT_CACHE_DIR,
     Config,
     ConfigError,
-    anthropic_credentials_available,
     load_config,
 )
 from .draft.session import (
@@ -44,6 +43,15 @@ from .draft.shortlist import context_block
 from .sleeper import SleeperClient, SleeperError, SleeperRateLimited
 from .waivers import ui as waivers_ui
 from .waivers.status import UnsupportedWaivers, build_report, select_statuses
+from .web import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    AppState,
+    DraftFeed,
+    WaiversFeed,
+    make_http_server,
+    urls,
+)
 
 log = logging.getLogger(__name__)
 
@@ -236,26 +244,14 @@ def cmd_recommend(args, console: Console) -> int:
 
 def _research_worker(config: Config, console: Console):
     """Build the prefetch worker, or explain why research is off. Never fatal."""
-    if not config.anthropic_api_key and not anthropic_credentials_available():
-        console.print(
-            "[dim]Research off: no Anthropic credentials. Set ANTHROPIC_API_KEY in .env, or "
-            "run `ant auth login`. `shortlist` still prints a block to paste into Claude."
-        )
-        return None
-    if config.research_budget <= 0:
-        console.print("[dim]Research off: RESEARCH_BUDGET is 0.")
-        return None
-    try:
-        from .draft.research import ResearchClient, ResearchWorker
+    from .draft.research import build_worker  # imported late: an enhancement, not a dependency
 
-        research_client = ResearchClient(
-            config.anthropic_api_key, config.model, config.research_budget
+    worker, note = build_worker(config)
+    if worker is None:
+        console.print(
+            f"[dim]Research off: {note}. `shortlist` still prints a block to paste into Claude."
         )
-        return ResearchWorker(research_client, config.research_concurrency)
-    except Exception as exc:  # noqa: BLE001 - research is an enhancement, never a dependency
-        log.warning("Research layer unavailable", exc_info=True)
-        console.print(f"[yellow]Research unavailable ({exc}); continuing without it.")
-        return None
+    return worker
 
 
 def cmd_replay(args, console: Console) -> int:
@@ -306,6 +302,59 @@ def cmd_waivers(args, console: Console) -> int:
     else:
         console.print(waivers_ui.header(report))
         console.print(waivers_ui.table(shown, report.now))
+    return EXIT_OK
+
+
+# -- serve command -------------------------------------------------------------------
+
+
+def cmd_serve(args, console: Console) -> int:
+    """Run the web app so a phone on the same network can read the same board."""
+    config = _config_for(args)
+    token = args.token or config.web_token
+    opener, interval = None, None
+    if args.replay:
+        # One recording, replayed on a loop: lets you try the phone UI with no draft running.
+        recording = load_recording(args.replay)
+        session = recording.session()
+        snapshots = recording.snapshots
+        opener = lambda: (session, ReplaySource(snapshots))  # noqa: E731 - one line, used once
+        interval = args.delay
+
+    state = AppState(
+        config=config,
+        draft=DraftFeed(
+            config,
+            opener=opener,
+            interval=interval,
+            my_slot=args.slot,
+            exclusions=lambda: _exclusions(args, config),
+        ),
+        waivers=WaiversFeed(config),
+        token=token,
+    )
+    try:
+        httpd = make_http_server(state, args.host, args.port)
+    except OSError as exc:
+        console.print(f"[bold red]Could not listen on {args.host}:{args.port} — {exc}")
+        console.print("[dim]Another server may already be running; try --port 8766.")
+        return EXIT_ERROR
+
+    console.print(f"[bold]ffa serve[/bold] · poll every {state.draft.interval:g}s"
+                  + (f" · replaying {args.replay}" if args.replay else "")
+                  + (" · token required" if token else ""))
+    console.print("[dim]Open this on your phone (same wi-fi):")
+    for url in urls(args.host, args.port, token):
+        console.print(f"  [bold cyan]{url}")
+    if not token:
+        console.print("[dim]Anyone on your network can read it; `--token SECRET` if that matters.")
+    console.print("[dim]Ctrl-C to stop.")
+
+    try:
+        httpd.serve_forever()
+    finally:
+        httpd.server_close()
+        state.shutdown()
     return EXIT_OK
 
 
@@ -528,6 +577,24 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                          help="rows to show when not looking players up (default %(default)s)")
     waivers.add_argument("--json", action="store_true", help="print JSON instead of a table")
     waivers.set_defaults(func=cmd_waivers)
+
+    serve = tools.add_parser("serve", parents=[common],
+                             help="run both tools as a web app you can open on your phone")
+    serve.add_argument("--host", default=DEFAULT_HOST,
+                       help="bind address (default %(default)s: every interface, so the phone can reach it)")
+    serve.add_argument("--port", type=int, default=DEFAULT_PORT, help="default %(default)s")
+    serve.add_argument("--token", help="require this token on every request (or set FFA_WEB_TOKEN)")
+    serve.add_argument("--league", help="Sleeper league ID, overriding SLEEPER_LEAGUE_ID")
+    serve.add_argument("--user", help=user_help)
+    serve.add_argument("--slot", type=int, help=slot_help)
+    serve.add_argument("--exclude", action="append", metavar="NAME",
+                       help="keep a player off the board (repeatable); also reads cache/exclude.txt")
+    serve.add_argument("--replay", type=Path, metavar="FILE",
+                       help="serve a recorded draft instead of a live one; the draft tab then "
+                            "needs no network")
+    serve.add_argument("--delay", type=float, default=3.0,
+                       help="seconds between replay frames (default %(default)s)")
+    serve.set_defaults(func=cmd_serve)
 
     args = parser.parse_args(argv)
     args.env_file = getattr(args, "env_file", Path(".env"))

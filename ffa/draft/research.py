@@ -22,6 +22,8 @@ from ..config import (
     RESEARCH_EFFORT,
     RESEARCH_TIMEOUT_SECONDS,
     WEB_SEARCH_MAX_USES,
+    Config,
+    anthropic_credentials_available,
     web_search_tool_type,
 )
 from .session import DraftView
@@ -393,3 +395,21 @@ class ResearchWorker:
 
     def shutdown(self) -> None:
         self._pool.shutdown(wait=False, cancel_futures=True)
+
+
+def build_worker(config: Config) -> tuple["ResearchWorker | None", str | None]:
+    """The prefetch worker, or None and the reason research is off. Never raises.
+
+    Research is an enhancement, never a dependency, so every caller — the terminal loop and
+    the web server alike — degrades to the heuristic shortlist and says why.
+    """
+    if not config.anthropic_api_key and not anthropic_credentials_available():
+        return None, "no Anthropic credentials (set ANTHROPIC_API_KEY in .env, or run `ant auth login`)"
+    if config.research_budget <= 0:
+        return None, "RESEARCH_BUDGET is 0"
+    try:
+        client = ResearchClient(config.anthropic_api_key, config.model, config.research_budget)
+        return ResearchWorker(client, config.research_concurrency), None
+    except Exception as exc:  # noqa: BLE001 - research never takes the caller down with it
+        log.warning("Research layer unavailable", exc_info=True)
+        return None, f"the research client would not start ({exc})"
