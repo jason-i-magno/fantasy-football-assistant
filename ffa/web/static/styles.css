@@ -95,6 +95,10 @@ main { padding: var(--pad); display: flex; flex-direction: column; gap: var(--pa
 .panel { display: flex; flex-direction: column; gap: var(--pad); }
 
 .hidden { display: none !important; }
+/* An author `display` rule outranks the user agent's `[hidden] { display: none }`, so a
+   flex or grid element with the hidden attribute stays visible. `show()` sets that
+   attribute, so make it mean what it says. */
+[hidden] { display: none !important; }
 
 .card {
   background: var(--surface);
@@ -333,3 +337,9 @@ details summary { font-size: 13px; color: var(--muted); cursor: pointer; margin:
 /* The swap list answers the question the tab exists to ask, so it reads larger. */
 #lineup-moves-card .lrow.swap .name { font-weight: 700; }
 #lineup-moves-card .lrow.swap .gain { font-size: 16px; }
+
+/* The league bar sits in the header, because the lineup and waiver tabs are always looking
+   at the same league and a control that appears twice is a control that can disagree. */
+.chips.leagues { padding: 0 var(--pad) 8px; }
+.chips.leagues .chip { font-size: 13px; padding: 6px 12px; }
+.chips.leagues .chip.off { opacity: 0.5; text-decoration: line-through; }

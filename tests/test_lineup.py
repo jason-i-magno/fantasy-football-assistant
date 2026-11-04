@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from ffa.config import load_config
+from ffa.leagues import UnknownLeague, directory, resolve
 from ffa.lineup.advice import (
     MAX_ADDS_PER_POSITION,
     NoRosterError,
@@ -19,6 +21,7 @@ from ffa.lineup.advice import (
 )
 from ffa.models import Player
 from ffa.projections import Projection
+from ffa.sleeper import SleeperError
 from ffa.waivers.status import FREE_AGENT, ROSTERED, WAIVERS, WaiverReport, WaiverRules, WaiverStatus
 
 NOW = datetime(2026, 11, 3, 20, 0, tzinfo=timezone.utc)
@@ -269,3 +272,68 @@ def test_a_backup_who_would_never_start_is_not_on_the_watchlist():
                                          SETTLED_BENCH + [("qb2", "QB", 18.0, 18.0)],
                                          free_agents=free_agents))
     assert not any(c.line.player_id == "backup_qb" for c in advice.watch)
+
+
+# -- more than one league ---------------------------------------------------------------
+
+
+class FakeLeagues:
+    def __init__(self, names, fail=()):
+        self._names = names
+        self._fail = set(fail)
+
+    def league(self, league_id):
+        if league_id in self._fail:
+            raise SleeperError(f"nope: {league_id}")
+        return {"name": self._names[league_id]}
+
+
+def two_league_config():
+    return load_config(
+        environ={"SLEEPER_USERNAME": "u", "SLEEPER_LEAGUE_ID": "111",
+                 "SLEEPER_LEAGUE_IDS": "111, 222"},
+        env_file=None,
+    )
+
+
+def test_the_configured_leagues_keep_their_order_with_the_default_first():
+    config = two_league_config()
+    assert config.league_ids == ("111", "222") and config.league_id == "111"
+    refs = directory(FakeLeagues({"111": "First", "222": "Second"}), config)
+    assert [(r.league_id, r.name, r.is_default) for r in refs] == [
+        ("111", "First", True), ("222", "Second", False)
+    ]
+
+
+def test_a_list_on_its_own_supplies_the_default():
+    config = load_config(environ={"SLEEPER_USERNAME": "u", "SLEEPER_LEAGUE_IDS": "777,888"},
+                         env_file=None)
+    assert config.league_id == "777" and config.league_ids == ("777", "888")
+
+
+def test_a_league_that_cannot_be_read_does_not_break_the_picker():
+    """One deleted or renamed league must not cost you the others."""
+    refs = directory(FakeLeagues({"111": "First", "222": ""}, fail=["222"]), two_league_config())
+    assert [r.available for r in refs] == [True, False]
+    assert refs[1].label == "222"  # falls back to the id, so it can still be chosen
+
+
+def test_a_league_can_be_named_instead_of_numbered():
+    client, config = FakeLeagues({"111": "The Example Bowl", "222": "Dynasty"}), two_league_config()
+    assert resolve(client, config, "Dynasty") == "222"
+    assert resolve(client, config, "dynasty") == "222"  # case doesn't matter
+    assert resolve(client, config, "example") == "111"  # nor does a partial name
+    assert resolve(client, config, "222") == "222"  # an id still passes through
+    assert resolve(client, config, None) == "111"  # and nothing means the default
+
+
+def test_an_ambiguous_name_is_refused_rather_than_guessed():
+    client = FakeLeagues({"111": "Dynasty A", "222": "Dynasty B"})
+    with pytest.raises(UnknownLeague, match="more than one"):
+        resolve(client, two_league_config(), "Dynasty")
+
+
+def test_an_unknown_name_lists_what_is_configured():
+    client = FakeLeagues({"111": "First", "222": "Second"})
+    with pytest.raises(UnknownLeague, match="'First', 'Second'"):
+        resolve(client, two_league_config(), "Third")

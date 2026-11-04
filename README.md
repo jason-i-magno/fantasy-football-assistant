@@ -14,6 +14,28 @@ uv sync
 cp .env.example .env   # fill in SLEEPER_USERNAME and SLEEPER_LEAGUE_ID (or DRAFT_ID)
 ```
 
+### More than one league
+
+Most managers are in several. List them in `SLEEPER_LEAGUE_IDS`, default first:
+
+```bash
+SLEEPER_LEAGUE_ID=11111111111111111       # the default
+SLEEPER_LEAGUE_IDS=11111111111111111,2222222222222222
+```
+
+Then refer to them the way you say them rather than by nineteen digits — `--league` takes a
+name, matched case-insensitively on exact, prefix, then substring, and refuses an ambiguous
+one instead of guessing:
+
+```bash
+uv run ffa lineup --league dynasty
+uv run ffa waivers --league "work league" --pos RB
+```
+
+On the phone they appear as chips under the tabs, shared by the Lineup and Waivers tabs so
+the two can never be looking at different leagues. The bar only appears when you have more
+than one.
+
 ## Draft assistant
 
 A terminal sidekick for a live Sleeper snake draft. It polls the draft board, works out
@@ -96,7 +118,7 @@ clock.
 uv run ffa waivers                       # top unrostered players: free agent, or on waivers until when
 uv run ffa waivers --pos RB --pos WR     # only these positions
 uv run ffa waivers --player "Pitts"      # look players up by name, rostered or not
-uv run ffa waivers --league ID --json    # another league than SLEEPER_LEAGUE_ID; JSON for scripts
+uv run ffa waivers --league dynasty --json  # another league, by name or ID; JSON for scripts
 ```
 
 Sleeper's API has no waiver-status field, and an unrostered player isn't necessarily a free
@@ -122,8 +144,9 @@ are refused rather than guessed at. Times print in your machine's timezone.
 
 ```bash
 uv run ffa lineup                  # this week: what to start, who to add, who to drop
+uv run ffa lineup --league dynasty # another league, by name or by ID
 uv run ffa lineup --adds 10        # rank more waiver candidates
-uv run ffa lineup --league ID --json
+uv run ffa lineup --json
 ```
 
 Answers the question you actually have a couple of times a week: *given what I own, what

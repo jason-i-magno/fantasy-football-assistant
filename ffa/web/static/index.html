@@ -17,6 +17,7 @@
     <button type="button" class="tab" data-tab="waivers" role="tab">Waivers</button>
     <button type="button" class="tab" data-tab="draft" role="tab">Draft</button>
   </nav>
+  <div class="chips leagues" id="league-chips" hidden></div>
   <div class="statusline"><span id="status">connecting…</span></div>
 </header>
 
@@ -54,14 +55,6 @@
     </section>
 
     <section class="card controls">
-      <details id="lineup-advanced">
-        <summary>Other league</summary>
-        <label class="field">
-          <span class="label">League ID</span>
-          <input type="text" id="lineup-league" placeholder="defaults to the one in .env"
-                 inputmode="numeric" autocomplete="off">
-        </label>
-      </details>
       <div class="actions">
         <button type="button" id="lineup-refresh" class="button">Refresh</button>
         <span class="sub" id="lineup-age"></span>
@@ -127,14 +120,6 @@
         <button type="button" class="chip" data-pos="K">K</button>
         <button type="button" class="chip" data-pos="DEF">DEF</button>
       </div>
-      <details id="waivers-advanced">
-        <summary>Other league</summary>
-        <label class="field">
-          <span class="label">League ID</span>
-          <input type="text" id="waivers-league" placeholder="defaults to the one in .env"
-                 inputmode="numeric" autocomplete="off">
-        </label>
-      </details>
       <div class="actions">
         <button type="button" id="waivers-refresh" class="button">Refresh</button>
         <span class="sub" id="waivers-age"></span>

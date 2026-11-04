@@ -15,7 +15,15 @@ from ffa.draft.session import ReplaySource, SessionError
 from ffa.lineup.source import LineupUnavailable
 from ffa.sleeper import SleeperError, SleeperRateLimited
 from ffa.waivers.status import FREE_AGENT, WAIVERS
-from ffa.web import AppState, DraftFeed, LineupFeed, WaiversFeed, create_app, urls
+from ffa.web import (
+    AppState,
+    DraftFeed,
+    LeagueDirectory,
+    LineupFeed,
+    WaiversFeed,
+    create_app,
+    urls,
+)
 from ffa.web.state import LINEUP_TTL_SECONDS, OPEN_RETRY_SECONDS, WAIVERS_TTL_SECONDS
 
 # The waiver fakes live with the tests that drive them hardest; `tests/` is importable.
@@ -483,3 +491,47 @@ def test_a_bad_league_id_is_refused_before_anything_is_fetched(recording):
                       base_url="http://ffa.test") as client:
         response = client.get("/api/lineup", params={"league": "../etc"})
     assert response.status_code == 503 and calls == []
+
+
+def test_the_league_picker_lists_what_is_configured(recording):
+    config = make_config(SLEEPER_LEAGUE_IDS="123, 456")
+    state, _, _ = build_state(recording, config=config)
+    state.leagues = LeagueDirectory(
+        config, client_factory=lambda: _FakeLeagues({"123": "First", "456": "Second"})
+    )
+    with httpx.Client(transport=httpx.WSGITransport(app=create_app(state)),
+                      base_url="http://ffa.test") as client:
+        body = client.get("/api/leagues").json()
+    assert body["leagues"] == [
+        {"league_id": "123", "name": "First", "default": True, "available": True},
+        {"league_id": "456", "name": "Second", "default": False, "available": True},
+    ]
+
+
+def test_league_names_are_fetched_once(recording):
+    config = make_config(SLEEPER_LEAGUE_IDS="123, 456")
+    calls = []
+    state, clock, _ = build_state(recording, config=config)
+    state.leagues = LeagueDirectory(
+        config,
+        client_factory=lambda: _FakeLeagues({"123": "First", "456": "Second"}, calls),
+        monotonic=clock,
+    )
+    with httpx.Client(transport=httpx.WSGITransport(app=create_app(state)),
+                      base_url="http://ffa.test") as client:
+        client.get("/api/leagues")
+        client.get("/api/leagues")
+    assert len(calls) == 2  # two leagues, one pass: the second request was served from cache
+
+
+class _FakeLeagues:
+    def __init__(self, names, calls=None):
+        self._names = names
+        self._calls = calls if calls is not None else []
+
+    def league(self, league_id):
+        self._calls.append(league_id)
+        return {"name": self._names[league_id]}
+
+    def close(self):
+        pass

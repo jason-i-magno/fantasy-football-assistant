@@ -452,7 +452,7 @@ $("#copy-context").addEventListener("click", async (event) => {
 
 // -- waivers --------------------------------------------------------------------------
 
-const waivers = { data: null, limit: 25, positions: new Set(), query: "", league: "", timer: null, debounce: null };
+const waivers = { data: null, limit: 25, positions: new Set(), query: "", timer: null, debounce: null };
 
 async function loadWaivers() {
   window.clearTimeout(waivers.timer);
@@ -460,7 +460,7 @@ async function loadWaivers() {
   if (!waivers.data) card.replaceChildren(el("div", "skeleton", "Loading waivers…"));
   try {
     const data = await api("/api/waivers", {
-      league: waivers.league,
+      league: leagues.chosen,
       q: waivers.query,
       pos: [...waivers.positions],
       limit: waivers.limit,
@@ -570,23 +570,68 @@ $("#waivers-positions").addEventListener("click", (event) => {
   loadWaivers();
 });
 
-$("#waivers-league").addEventListener("change", (event) => {
-  waivers.league = event.target.value.trim();
-  waivers.data = null;
-  loadWaivers();
-});
 
 $("#waivers-refresh").addEventListener("click", () => loadWaivers());
 
+// -- leagues --------------------------------------------------------------------------
+
+// One league for the whole app: the lineup and waiver tabs are always looking at the same
+// one, so the control belongs in the header rather than twice in the panels.
+const leagues = { list: [], chosen: stored("ffa-league") || "" };
+
+async function loadLeagues() {
+  try {
+    const data = await api("/api/leagues");
+    leagues.list = data.leagues || [];
+  } catch (error) {
+    leagues.list = [];
+  }
+  const known = leagues.list.some((l) => l.league_id === leagues.chosen);
+  if (leagues.chosen && !known) leagues.chosen = "";  // a league that is no longer configured
+  renderLeagues();
+}
+
+function renderLeagues() {
+  const bar = $("#league-chips");
+  // With one league there is nothing to choose, so the bar stays out of the way.
+  show(bar, leagues.list.length > 1 && state.tab !== "draft");
+  clear(bar);
+  const active = leagues.chosen || (leagues.list.find((l) => l.default) || {}).league_id || "";
+  leagues.list.forEach((league) => {
+    const chip = el("button", "chip", league.name);
+    chip.type = "button";
+    chip.dataset.league = league.league_id;
+    if (league.league_id === active) chip.classList.add("on");
+    if (!league.available) chip.classList.add("off");
+    bar.append(chip);
+  });
+}
+
+function chooseLeague(leagueId) {
+  if (leagues.chosen === leagueId) return;
+  leagues.chosen = leagueId;
+  store("ffa-league", leagueId);
+  lineup.data = null;
+  waivers.data = null;
+  renderLeagues();
+  if (state.tab === "lineup") loadLineup();
+  else if (state.tab === "waivers") loadWaivers();
+}
+
+$("#league-chips").addEventListener("click", (event) => {
+  const chip = event.target.closest(".chip");
+  if (chip) chooseLeague(chip.dataset.league);
+});
+
 // -- lineup ---------------------------------------------------------------------------
 
-const lineup = { data: null, error: null, league: "", fetchedAt: 0, timer: null };
+const lineup = { data: null, error: null, fetchedAt: 0, timer: null };
 
 async function loadLineup() {
   const summary = $("#lineup-summary-card");
   if (!lineup.data) summary.replaceChildren(el("div", "skeleton", "Working out your week…"));
   try {
-    const data = await api("/api/lineup", { league: lineup.league });
+    const data = await api("/api/lineup", { league: leagues.chosen });
     lineup.data = data;
     lineup.error = null;
     lineup.fetchedAt = Date.now();
@@ -727,11 +772,6 @@ function renderCandidates(card, candidates) {
 }
 
 $("#lineup-refresh").addEventListener("click", () => { lineup.data = null; loadLineup(); });
-$("#lineup-league").addEventListener("change", (event) => {
-  lineup.league = event.target.value.trim();
-  lineup.data = null;
-  loadLineup();
-});
 
 // -- tabs, freshness, visibility ------------------------------------------------------
 
@@ -770,6 +810,7 @@ function selectTab(name) {
   // Only the visible tab polls: nothing is fetched for a screen nobody is looking at.
   window.clearTimeout(draft.timer);
   window.clearTimeout(waivers.timer);
+  renderLeagues();
   if (name === "draft") pollDraft();
   else if (name === "waivers") loadWaivers();
   else if (!lineup.data) loadLineup();
@@ -796,5 +837,6 @@ window.setInterval(() => {
 }, 1000);
 
 // Lineup is the default: a draft happens on a handful of days a year, a lineup every week.
+loadLeagues();
 const requested = (window.location.hash || "").slice(1);
 selectTab(TABS.includes(requested) ? requested : TABS.includes(stored("ffa-tab")) ? stored("ffa-tab") : "lineup");

@@ -12,6 +12,7 @@ uv run ffa draft replay tests/fixtures/replay_mock_12team.jsonl --snapshot 2   #
 uv run ffa draft doctor                          # live: validate .env, resolve IDs, dump raw draft settings
 uv run ffa waivers --league ID --player NAME     # live: free agent or on waivers, and until when
 uv run ffa lineup                                # live: start/sit and waiver calls for the open week
+uv run ffa lineup --league NAME                  # another configured league, by name
 uv run ffa serve --replay tests/fixtures/replay_mock_12team.jsonl   # offline smoke test of the web app
 uv run ffa serve                                 # live: the web app, on every interface
 ```
@@ -44,6 +45,10 @@ those as a web app for a phone on the same network).
 - `ffa/draft/`, `ffa/waivers/` and `ffa/lineup/`: each tool's logic and rendering.
 - `ffa/scoring.py`, `ffa/projections.py`, `ffa/espn_fantasy.py`, `ffa/roster.py`: the
   projection layer, shared because more than one tool needs points and slot rules.
+- `ffa/leagues.py`: the configured leagues (`SLEEPER_LEAGUE_IDS`) and name lookup, so
+  `--league <name>` works and the phone shows chips instead of nineteen-digit ids. Names come
+  from Sleeper, never from config: a second place to keep a name is a second place for it
+  to be wrong.
 - `ffa/web/`: the web app (see below).
 - `ffa/cli.py`: the single entry point. Each tool is a subparser; the thin command functions
   for all three live here, with shared helpers like `_config_for` at the bottom.
@@ -137,6 +142,12 @@ package, like `draft/prompts/research.md`). Three tabs: Lineup (the default), Wa
   right for a one-shot command and wrong for a server that stays up for days. `LineupFeed`
   caches for ten minutes and builds synchronously: a cold build measured about 3.5s, most
   of it ESPN, which is a better trade than a worker thread and a progress protocol.
+- The league picker is one control in the header, shared by the lineup and waivers tabs,
+  because two controls for one choice is one of them being wrong. It is hidden on the draft
+  tab, which follows `DRAFT_ID` instead.
+- `show()` toggles the `hidden` *attribute*, and an author `display` rule outranks the user
+  agent's `[hidden] { display: none }` — a flex or grid element would stay visible. There is
+  now an explicit `[hidden]` rule in `styles.css`; don't remove it.
 - Read-only by construction: the app rejects anything but GET/HEAD. `--token`/`FFA_WEB_TOKEN`
   gates every route including the static files, and static serving is confined to
   `ffa/web/static` by a `is_relative_to` check — keep both when adding routes.

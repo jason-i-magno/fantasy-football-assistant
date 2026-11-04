@@ -32,6 +32,7 @@ from ..draft.session import (
     load_exclusions,
     open_session,
 )
+from ..leagues import LeagueRef, directory
 from ..lineup.advice import LineupAdvice, NoRosterError
 from ..lineup.source import LineupSources, LineupUnavailable, load_advice
 from ..sleeper import SleeperClient, SleeperError, SleeperRateLimited
@@ -47,6 +48,8 @@ WAIVERS_ERROR_TTL_SECONDS = 15.0  # don't retry a broken ESPN or Sleeper on ever
 # seconds and about fifty megabytes from ESPN. Ten minutes is far fresher than the data.
 LINEUP_TTL_SECONDS = 600.0
 LINEUP_ERROR_TTL_SECONDS = 30.0
+# League names are effectively immutable; this only avoids refetching them on every load.
+LEAGUES_TTL_SECONDS = 3600.0
 LEAGUE_ID = re.compile(r"^\d{1,32}$")
 
 
@@ -373,6 +376,45 @@ class LineupFeed:
             return built
 
 
+class LeagueDirectory:
+    """The configured leagues and their names, for the picker on the phone.
+
+    One unreachable league is reported as a nameless entry rather than an error, so a
+    league that was deleted or renamed cannot take the whole picker down with it.
+    """
+
+    def __init__(
+        self,
+        config: Config,
+        *,
+        client_factory: Callable[[], Any] | None = None,
+        ttl: float = LEAGUES_TTL_SECONDS,
+        monotonic: Callable[[], float] = time.monotonic,
+    ):
+        self._config = config
+        self._client_factory = client_factory or (lambda: SleeperClient(config.cache_dir))
+        self._ttl = ttl
+        self._monotonic = monotonic
+        self._lock = threading.Lock()
+        self._refs: list[LeagueRef] | None = None
+        self._expires = 0.0
+
+    def refs(self) -> list[LeagueRef]:
+        with self._lock:
+            now = self._monotonic()
+            if self._refs is not None and now < self._expires:
+                return self._refs
+            client = self._client_factory()
+            try:
+                self._refs = directory(client, self._config)
+            finally:
+                close = getattr(client, "close", None)
+                if callable(close):
+                    close()
+            self._expires = now + self._ttl
+            return self._refs
+
+
 @dataclass
 class AppState:
     """Everything the WSGI app needs, assembled once by `ffa serve`."""
@@ -381,6 +423,7 @@ class AppState:
     draft: DraftFeed
     waivers: WaiversFeed
     lineup: LineupFeed
+    leagues: LeagueDirectory | None = None
     token: str | None = None
     static_dir: Path = Path(__file__).parent / "static"
 
