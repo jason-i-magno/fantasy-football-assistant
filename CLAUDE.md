@@ -119,6 +119,13 @@ to get wrong, in the order they bite:
   swaps worth nothing on a week whose real gain is zero.
 - **Drops are judged on the rest of the season.** On this week alone every bye-week starter
   projects zero and looks free to drop.
+- **Two horizons, never conflated.** `keep` is Sleeper's preseason season total over 18
+  games (slow to move, which is why it is the floor for a drop), while `playoff_per_game` is
+  a fresh blend of the league's actual playoff weeks, from `projections.playoff_weeks` on
+  `playoff_week_start` and the bracket size. They are labelled "season pace" and "playoffs"
+  on both surfaces precisely so nobody reads one as the other. One ESPN request carries
+  every remaining week, so `espn_fantasy.fetch_weeks` reads the playoff weeks out of the
+  response already fetched; only Sleeper costs a request per week.
 - **Byes come from the kickoff schedule.** Both feeds publish a row for a team on bye
   (Sleeper's empty, ESPN's with `appliedTotal` 0), so "no projection" finds nothing. A
   player with no NFL team at all is a different thing and must not be called a bye.

@@ -10,16 +10,16 @@ a built report (`ffa/web/state.py` keeps one for minutes at a time) instead of a
 """
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
 import httpx
 
 from ..espn import week_kickoffs
-from ..espn_fantasy import ESPNFantasyError, ESPNPlayer, week_projections
+from ..espn_fantasy import ESPNFantasyError, ESPNPlayer, fetch_weeks
 from ..models import Player
-from ..projections import Projection, build
+from ..projections import Projection, build, playoff_weeks, window_per_game
 from ..sleeper import SleeperClient
 from ..waivers.status import LAST_REGULAR_WEEK, build_report
 from .advice import LineupAdvice, build_advice, target_week
@@ -42,6 +42,7 @@ class LineupSources:
     sleeper: bool = False
     espn: bool = False
     espn_note: str | None = None
+    playoff_weeks: tuple[int, ...] = ()  # the window behind the per-game playoff number
 
 
 def load_advice(
@@ -51,7 +52,7 @@ def load_advice(
     username: str,
     now: datetime,
     kickoffs_for: Callable[[int, int], Mapping[str, datetime]] = week_kickoffs,
-    espn_for: Callable[[int, int], list[ESPNPlayer]] | None = None,
+    espn_for: Callable[[int, Sequence[int]], dict[int, list[ESPNPlayer]]] | None = None,
     http: httpx.Client | None = None,
     max_adds: int | None = None,
 ) -> tuple[LineupAdvice, LineupSources]:
@@ -87,18 +88,39 @@ def load_advice(
 
     sleeper_week = client.projections_week(str(season), week)
     sleeper_season = client.projections_season(str(season))
-    sources = LineupSources(sleeper=bool(sleeper_week))
 
-    espn_rows: list[ESPNPlayer] = []
-    fetch_espn = espn_for or (lambda s, w: week_projections(s, w, http=http))
+    # The fantasy playoffs are a separate question from the rest of the season: a player can
+    # be worth a point a week in one window and nothing in the other, because the schedule
+    # is different. Only weeks still to come count.
+    window = tuple(w for w in playoff_weeks(league.get("settings") or {}) if w >= week)
+    sources = LineupSources(sleeper=bool(sleeper_week), playoff_weeks=window)
+
+    espn_weeks: dict[int, list[ESPNPlayer]] = {}
+    # One ESPN request carries every remaining week, so the playoff weeks are free here.
+    fetch_espn = espn_for or (lambda s, w: fetch_weeks(s, w, http=http))
     try:
-        espn_rows = fetch_espn(season, week)
-        sources = LineupSources(sleeper=sources.sleeper, espn=bool(espn_rows))
+        espn_weeks = fetch_espn(season, (week, *window))
+        sources = LineupSources(sleeper=sources.sleeper, espn=bool(espn_weeks.get(week)),
+                                playoff_weeks=window)
     except ESPNFantasyError as exc:
         # A second opinion is an improvement, not a dependency. Losing it costs the spread
         # check and the role-change gap, so say so rather than silently halving the inputs.
         log.warning("ESPN projections unavailable: %s", exc)
-        sources = LineupSources(sleeper=sources.sleeper, espn=False, espn_note=str(exc))
+        sources = LineupSources(sleeper=sources.sleeper, espn=False, espn_note=str(exc),
+                                playoff_weeks=window)
+    espn_rows = espn_weeks.get(week, [])
+
+    # Sleeper is asked per week, so the playoff weeks cost one request each; the result is
+    # cached for the run and the whole report is cached for minutes, so it is paid rarely.
+    playoff: dict[str, float] = {}
+    if window:
+        playoff = window_per_game(
+            players=players,
+            scoring=scoring,
+            weeks=window,
+            sleeper_weeks={w: client.projections_week(str(season), w) for w in window},
+            espn_weeks=espn_weeks,
+        )
 
     projections: Mapping[str, Projection] = build(
         players=players,
@@ -107,6 +129,7 @@ def load_advice(
         sleeper_season=sleeper_season,
         espn_week=espn_rows,
         playing_teams=frozenset(kickoffs),
+        playoff=playoff,
     )
     if not projections:
         raise LineupUnavailable(

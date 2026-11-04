@@ -28,8 +28,9 @@ finds nothing. A team absent from the week's kickoffs is on bye, full stop.
 """
 
 import logging
+import math
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,6 +50,7 @@ ROLE_CHANGE_FLAG = 4.0
 # whole season's points as a single game's and value a defense at about 98 points a week.
 SEASON_GAMES = 18.0
 MIN_PLAUSIBLE_GAMES = 2.0
+LAST_WEEK = 18  # the NFL regular season, and the last week any league can play
 # Positions taken from Sleeper alone. ESPN reports made field goals under 40 yards as one
 # bucket where leagues score 0-19, 20-29 and 30-39 separately, so its kicker rows cannot be
 # re-scored honestly. A kicker is a fixed slot anyway: there is no decision in it.
@@ -81,6 +83,7 @@ class Projection:
     sleeper: float | None = None
     espn: float | None = None
     season_per_game: float | None = None  # Sleeper's season total over its projected games
+    playoff_per_game: float | None = None  # average over the league's playoff weeks
     on_bye: bool = False  # his team has no game this week
     no_team: bool = False  # not on an NFL roster at all, which is not the same as a bye
     sources: tuple[str, ...] = ()
@@ -182,6 +185,62 @@ def _index_espn(
     return resolved
 
 
+def playoff_weeks(settings: Mapping[str, Any]) -> tuple[int, ...]:
+    """The weeks a league's fantasy playoffs are played in.
+
+    Derived rather than assumed: `playoff_week_start` says when they begin and the bracket
+    size says how long they run, with `playoff_round_type` for the leagues that give the
+    championship, or every round, two weeks. Capped at week 18, which is where the NFL
+    regular season and every fantasy league end.
+    """
+    try:
+        start = int(settings.get("playoff_week_start"))
+    except (TypeError, ValueError):
+        return ()
+    if start < 1:
+        return ()
+    try:
+        teams = int(settings.get("playoff_teams") or 0)
+    except (TypeError, ValueError):
+        teams = 0
+    rounds = max(1, math.ceil(math.log2(teams))) if teams > 1 else 1
+    try:
+        round_type = int(settings.get("playoff_round_type") or 0)
+    except (TypeError, ValueError):
+        round_type = 0
+    weeks = rounds + 1 if round_type == 1 else rounds * 2 if round_type == 2 else rounds
+    return tuple(week for week in range(start, start + weeks) if week <= LAST_WEEK)
+
+
+def window_per_game(
+    *,
+    players: Mapping[str, Player],
+    scoring: Mapping[str, Any],
+    weeks: Sequence[int],
+    sleeper_weeks: Mapping[int, Iterable[Mapping[str, Any]]] | None = None,
+    espn_weeks: Mapping[int, Iterable[ESPNPlayer]] | None = None,
+) -> dict[str, float]:
+    """Average points per game over a set of weeks, blended the same way as any other week.
+
+    A mean over the window, not a total: a player missing from one week's feed should not
+    look worse than one the feed happens to cover, and the number is read as "per game".
+    """
+    sleeper_weeks = sleeper_weeks or {}
+    espn_weeks = espn_weeks or {}
+    totals: dict[str, list[float]] = {}
+    for week in weeks:
+        weekly = build(
+            players=players,
+            scoring=scoring,
+            sleeper_week=sleeper_weeks.get(week, ()),
+            espn_week=espn_weeks.get(week, ()),
+        )
+        for player_id, projection in weekly.items():
+            if projection.sources:  # a week nobody projected him for is not a zero
+                totals.setdefault(player_id, []).append(projection.points)
+    return {pid: sum(values) / len(values) for pid, values in totals.items() if values}
+
+
 def _season_per_game(stats: Mapping[str, Any] | None, scoring: Mapping[str, Any]) -> float | None:
     """A *season* projection row expressed per game, or None when it has no usable total.
 
@@ -207,6 +266,7 @@ def build(
     sleeper_season: Iterable[Mapping[str, Any]] = (),
     espn_week: Iterable[ESPNPlayer] = (),
     playing_teams: frozenset[str] | None = None,
+    playoff: Mapping[str, float] | None = None,
 ) -> dict[str, Projection]:
     """A `Projection` for every player either source has a weekly number for.
 
@@ -260,6 +320,7 @@ def build(
             sleeper=sleeper_points,
             espn=espn_points,
             season_per_game=_season_per_game(season_rows.get(player_id), scoring),
+            playoff_per_game=(playoff or {}).get(player_id),
             on_bye=on_bye,
             no_team=no_team,
             sources=sources,

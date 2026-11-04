@@ -46,6 +46,14 @@ def header(advice: LineupAdvice, sources: LineupSources) -> RenderableType:
             (f"+{advice.gain:.1f} pts", "bold yellow"),
             f" available ({advice.current.total:.1f} → {advice.optimal.total:.1f}).",
         ))
+    if sources.playoff_weeks:
+        weeks = sources.playoff_weeks
+        span = f"week {weeks[0]}" if len(weeks) == 1 else f"weeks {weeks[0]}-{weeks[-1]}"
+        lines.append(Text(
+            f"Playoffs is a fresh projection of {span}, game by game. Season pace is the "
+            f"preseason season total over 18 games, which is deliberately slow to move.",
+            style="dim",
+        ))
     where = "Sleeper (RotoWire)" + (" blended with ESPN" if sources.espn else " only")
     note = f" ESPN unavailable: {sources.espn_note}" if sources.espn_note else ""
     lines.append(Text(f"Projections: {where}, re-scored with this league's settings.{note}",
@@ -86,13 +94,16 @@ def bench_table(advice: LineupAdvice) -> Table:
     grid.add_column("Player")
     grid.add_column("Pos")
     grid.add_column("Proj", justify="right")
-    grid.add_column("Rest of season", justify="right")
+    grid.add_column("Season pace", justify="right")
+    grid.add_column("Playoffs", justify="right")
     grid.add_column("Why", style="dim")
     promoted = {swap.into.player_id for swap in advice.swaps}
     for line in advice.bench:
         name = Text(line.player.name, style="bold green" if line.player_id in promoted else "")
         grid.add_row(name, line.player.position, _points(line.points),
-                     Text(f"{line.keep:.1f}/g", style="dim"), "; ".join(line.reasons))
+                     Text(f"{line.keep:.1f}/g", style="dim"),
+                     Text(f"{line.playoff:.1f}/g" if line.playoff is not None else "—", style="dim"),
+                     "; ".join(line.reasons))
     return grid
 
 
@@ -150,6 +161,7 @@ def _line_json(line: PlayerLine) -> dict[str, Any]:
         "team": line.player.team,
         "points": round(line.points, 2),
         "keep": round(line.keep, 2),
+        "playoff": None if line.playoff is None else round(line.playoff, 2),
         "locked": line.locked,
         "injury_status": line.player.injury_status,
         "reasons": list(line.reasons),
@@ -197,7 +209,9 @@ def advice_json(advice: LineupAdvice, sources: LineupSources) -> dict[str, Any]:
         "current_total": round(advice.current.total, 2),
         "optimal_total": round(advice.optimal.total, 2),
         "gain": round(advice.gain, 2),
-        "sources": {"sleeper": sources.sleeper, "espn": sources.espn, "espn_note": sources.espn_note},
+        "sources": {"sleeper": sources.sleeper, "espn": sources.espn,
+                    "espn_note": sources.espn_note,
+                    "playoff_weeks": list(sources.playoff_weeks)},
         "notes": list(advice.notes),
         "lineup": [_seat_json(seat, advice, changes) for seat in advice.current.seats],
         "bench": [_line_json(line) for line in advice.bench],

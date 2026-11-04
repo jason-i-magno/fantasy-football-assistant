@@ -60,7 +60,8 @@ class PlayerLine:
     seat: Seat | None = None  # the slot he currently occupies, None when benched
     locked: bool = False  # his game has kicked off; Sleeper will not let him move
     reasons: tuple[str, ...] = ()  # why his points are what they are
-    keep: float = 0.0  # rest-of-season value per game, which is what a drop really costs
+    keep: float = 0.0  # season pace per game; the floor on what dropping him costs
+    playoff: float | None = None  # per game over the league's remaining playoff weeks
 
     @property
     def player_id(self) -> str:
@@ -303,6 +304,7 @@ def build_advice(
             player=player, projection=projection, points=points,
             locked=locked, reasons=reasons + (("locked: his game started",) if locked else ()),
             keep=_keep_value(projection, points),
+            playoff=projection.playoff_per_game if projection is not None else None,
         )
 
     # Seat the lineup as it stands. Sleeper writes "0" for an empty starting slot.
@@ -323,6 +325,7 @@ def build_advice(
             lines[seat.player_id] = PlayerLine(
                 player=line.player, projection=line.projection, points=line.points,
                 seat=seat, locked=line.locked, reasons=line.reasons, keep=line.keep,
+                playoff=line.playoff,
             )
 
     points = {pid: line.points for pid, line in lines.items()}
@@ -469,7 +472,8 @@ def _candidates(
             reasons = reasons + (f"{projection.role_change:+.1f} vs his season pace",)
         out.append(AddCandidate(
             line=PlayerLine(player=player, projection=projection, points=week_points,
-                            reasons=reasons, keep=keep),
+                            reasons=reasons, keep=keep,
+                            playoff=projection.playoff_per_game),
             gain=gain, drop=drop, status=statuses.get(player_id),
         ))
     out.sort(key=lambda c: -c.gain)

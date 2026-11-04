@@ -16,13 +16,14 @@ Three things about this endpoint are not obvious, and all three cost real debugg
 3. **A team on bye still has a row**, with `appliedTotal` 0 and empty stats, so "no row"
    finds no byes. `ffa/projections.py` reads byes off the kickoff schedule instead.
 
-One request carries every remaining week of the season, which is why `week_projections`
-takes the week it wants and reads it out of the response rather than asking per week.
+One request carries every remaining week of the season, which is why `fetch_weeks` reads
+several weeks out of a single response rather than asking per week. That is what makes a
+playoff-window number free: weeks 15 to 17 are already in the payload fetched for week 9.
 """
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -170,49 +171,63 @@ def parse_player(row: Mapping[str, Any], season: int, week: int) -> ESPNPlayer |
     )
 
 
-def week_projections(
+def fetch_weeks(
     season: int,
-    week: int,
+    weeks: Sequence[int],
     *,
     http: httpx.Client | None = None,
     pages: int = DEFAULT_PAGES,
     page_size: int = PAGE_SIZE,
-) -> list[ESPNPlayer]:
-    """ESPN's projections for one week, most-owned players first.
+) -> dict[int, list[ESPNPlayer]]:
+    """ESPN's projections for several weeks, from one pass over the player feed.
 
-    Pages stop early once a page comes back short, so a smaller pool than `pages` asks for
-    costs one wasted request at most.
+    The response to a single request carries every remaining week, so asking for the coming
+    week and the three playoff weeks costs exactly what asking for one costs. Pages stop
+    early once one comes back short, so a smaller pool than `pages` asks for wastes at most
+    one request.
     """
+    wanted = sorted({int(week) for week in weeks})
+    if not wanted:
+        return {}
     client = http or httpx.Client(
         timeout=30.0, headers={"User-Agent": f"ffa/{__version__}", "Accept": "application/json"}
     )
     url = PLAYER_FEED_URL.format(season=season)
-    out: list[ESPNPlayer] = []
+    out: dict[int, list[ESPNPlayer]] = {week: [] for week in wanted}
+    first = wanted[0]
     try:
         for page in range(max(1, pages)):
             offset = page * page_size
             try:
                 response = client.get(
                     url,
-                    params={"view": "kona_player_info", "scoringPeriodId": week},
+                    params={"view": "kona_player_info", "scoringPeriodId": first},
                     headers={"X-Fantasy-Filter": _filter_header(offset, page_size)},
                 )
                 response.raise_for_status()
                 payload = response.json()
             except httpx.HTTPError as exc:
-                raise ESPNFantasyError(f"Could not reach ESPN for week {week} projections: {exc}") from exc
+                raise ESPNFantasyError(f"Could not reach ESPN for week {first} projections: {exc}") from exc
             except ValueError as exc:
-                raise ESPNFantasyError(f"ESPN sent invalid JSON for week {week} projections.") from exc
+                raise ESPNFantasyError(f"ESPN sent invalid JSON for week {first} projections.") from exc
             rows = payload.get("players") if isinstance(payload, dict) else None
             if not rows:
                 break
             for row in rows:
-                if isinstance(row, dict) and (parsed := parse_player(row, season, week)) is not None:
-                    out.append(parsed)
+                if not isinstance(row, dict):
+                    continue
+                for week in wanted:
+                    if (parsed := parse_player(row, season, week)) is not None:
+                        out[week].append(parsed)
             if len(rows) < page_size:
                 break
     finally:
         if http is None:
             client.close()
-    log.debug("ESPN week %s: parsed %s players", week, len(out))
+    log.debug("ESPN weeks %s: parsed %s", wanted, {w: len(v) for w, v in out.items()})
     return out
+
+
+def week_projections(season: int, week: int, **kwargs) -> list[ESPNPlayer]:
+    """ESPN's projections for one week, most-owned players first."""
+    return fetch_weeks(season, [week], **kwargs).get(week, [])

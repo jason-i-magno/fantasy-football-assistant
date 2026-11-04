@@ -710,6 +710,13 @@ function renderLineup(data) {
   summary.append(el("div", "wline dim",
     `Projections: Sleeper${sources.espn ? " blended with ESPN" : " only"}, ` +
     `re-scored with this league's settings.` + (sources.espn_note ? ` ESPN: ${sources.espn_note}` : "")));
+  const weeks = (data.sources || {}).playoff_weeks || [];
+  if (weeks.length) {
+    const span = weeks.length === 1 ? `week ${weeks[0]}` : `weeks ${weeks[0]}-${weeks[weeks.length - 1]}`;
+    summary.append(el("div", "wline dim",
+      `Playoff figures are a fresh projection of ${span}; season pace is the preseason ` +
+      `total over 18 games and moves slowly.`));
+  }
   (data.notes || []).forEach((note) => summary.append(el("div", "wline dim", note)));
 
   // The moves, which is the whole point of the tab.
@@ -739,7 +746,12 @@ function renderLineup(data) {
   show(benchCard, (data.bench || []).length > 0);
   const bench = clear(benchCard.querySelector(".body"));
   (data.bench || []).forEach((player) => {
-    const row = playerRow(player, el("span", "tag", `${player.keep.toFixed(1)}/g rest`));
+    const extra = el("span", "tag", `${player.keep.toFixed(1)}/g pace`);
+    const row = playerRow(player, extra);
+    if (player.playoff !== null && player.playoff !== undefined) {
+      // The two are different questions, so they are two tags rather than one number.
+      extra.after(el("span", "tag playoff", `${player.playoff.toFixed(1)}/g playoffs`));
+    }
     bench.append(row);
   });
 
@@ -762,7 +774,11 @@ function renderCandidates(card, candidates) {
         : null;
     row.append(nameBlock(candidate.player, status));
     if (candidate.drop) {
-      row.append(el("div", "lwhy", `Drop ${candidate.drop.name} (${candidate.drop.keep.toFixed(1)}/g rest of season)`));
+      const drop = candidate.drop;
+      const playoff = drop.playoff === null || drop.playoff === undefined
+        ? "" : `, ${drop.playoff.toFixed(1)}/g in the playoffs`;
+      row.append(el("div", "lwhy",
+        `Drop ${drop.name} (${drop.keep.toFixed(1)}/g season pace${playoff})`));
     }
     if (candidate.player.reasons && candidate.player.reasons.length) {
       row.append(el("div", "lwhy", candidate.player.reasons.join("; ")));
