@@ -11,6 +11,8 @@ uv run pytest tests/test_board.py::test_name     # one test (or -k PATTERN)
 uv run ffa draft replay tests/fixtures/replay_mock_12team.jsonl --snapshot 2   # offline smoke test of the whole pipeline
 uv run ffa draft doctor                          # live: validate .env, resolve IDs, dump raw draft settings
 uv run ffa waivers --league ID --player NAME     # live: free agent or on waivers, and until when
+uv run ffa serve --replay tests/fixtures/replay_mock_12team.jsonl   # offline smoke test of the web app
+uv run ffa serve                                 # live: the web app, on every interface
 ```
 
 No linter, formatter or type checker is configured. Config comes from `./.env` (see
@@ -31,14 +33,16 @@ than working around the check.
 
 ## Layout
 
-The CLI is `ffa <tool> <command>`. There are two tools: `ffa draft` (a live Sleeper
-snake-draft assistant) and `ffa waivers` (free agent or on waivers, right now).
+The CLI is `ffa <tool> [command]`. There are three tools: `ffa draft` (a live Sleeper
+snake-draft assistant), `ffa waivers` (free agent or on waivers, right now), and `ffa serve`
+(both of those as a web app for a phone on the same network).
 
 - `ffa/` top level: code shared across tools — `sleeper.py` (API client), `espn.py` (NFL
   kickoff times, which Sleeper doesn't publish), `config.py`, `models.py`.
 - `ffa/draft/` and `ffa/waivers/`: each tool's logic and rendering.
+- `ffa/web/`: the web app (see below).
 - `ffa/cli.py`: the single entry point. Each tool is a subparser; the thin command functions
-  for both tools live here, with shared helpers like `_config_for` at the bottom.
+  for all three live here, with shared helpers like `_config_for` at the bottom.
 - `docs/draft-spec.md`: the original design doc and source of truth for the draft tool. It
   predates the `draftbot` → `ffa` rename, and research has since moved from per-player to
   per-shortlist (see below).
@@ -80,6 +84,31 @@ included). Its docstring has the details and how they were verified. Only
 only against adds that happened, which cannot catch a player wrongly reported as a free
 agent: check any new rule in that direction too.
 
+## Web app
+
+`ffa serve` is a WSGI app with no framework and no new dependency: `ffa/web/app.py` routes,
+`state.py` holds the shared feeds, `payload.py` turns a `DraftView` into JSON, and
+`static/` is the whole UI (three files, vanilla JS, no build step — they ship inside the
+package, like `draft/prompts/research.md`).
+
+- Nothing fantasy-related lives in the browser. `payload.py` renders the same `DraftView`
+  `ui.py` draws, so a fix to the pipeline reaches both surfaces at once. If the UI needs a
+  number, add it to the payload rather than deriving it in JS.
+- One poll serves every screen. `DraftFeed` holds the newest view behind a lock and refuses
+  to refetch inside the poll interval, so N phones are still one Sleeper cadence, and it
+  polls on request rather than on a timer (no screen open, no traffic). Its error policy
+  mirrors `cli._run_loop`, so fix both together.
+- `WaiversFeed` builds each report with a *fresh* `SleeperClient`: that client caches
+  rosters, transactions and the NFL state for its own lifetime, which is right for a
+  one-shot command and wrong for a server that stays up for days.
+- Read-only by construction: the app rejects anything but GET/HEAD. `--token`/`FFA_WEB_TOKEN`
+  gates every route including the static files, and static serving is confined to
+  `ffa/web/static` by a `is_relative_to` check — keep both when adding routes.
+- Tests drive the app in-process through `httpx.WSGITransport` with a recording behind the
+  draft feed and `FakeSleeper` behind the waivers feed, so `tests/test_web.py` stays offline
+  and sub-second like everything else. The JS has no test of its own beyond a check that it
+  only calls routes that exist; screenshot it if you change the rendering.
+
 ## Constraints and gotchas
 
 - The Sleeper API is read-only and unauthenticated. The tool advises; it can never pick.
@@ -92,6 +121,9 @@ agent: check any new rule in that direction too.
 - Tunable shortlist weights are named constants at the top of `draft/scarcity.py`.
 - Recordings are JSON Lines (header, then snapshots) tagged `"draftbot-recording/1"`. Keep
   that tag: existing recordings depend on it.
+- Research credentials are checked in one place, `draft/research.py::build_worker`, which
+  returns `(worker, reason)` and never raises; the CLI prints the reason, the web app shows
+  it on the recommendation card.
 - `cache/` (gitignored) holds the player map, logs (`ffa.log`) and real draft recordings
   containing real Sleeper usernames and league IDs. Scrub them before turning one into a
   test fixture.

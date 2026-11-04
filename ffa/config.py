@@ -59,6 +59,7 @@ class Config:
     research_concurrency: int
     research_budget: int
     cache_dir: Path = DEFAULT_CACHE_DIR
+    web_token: str | None = None  # when set, `ffa serve` requires it on every request
 
     def require_anthropic_key(self) -> str:
         if not self.anthropic_api_key:
@@ -168,4 +169,5 @@ def load_config(
         poll_interval_seconds=poll_interval,
         research_concurrency=concurrency,
         research_budget=budget,
+        web_token=get("FFA_WEB_TOKEN"),
     )

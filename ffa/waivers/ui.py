@@ -91,6 +91,9 @@ def report_json(report: WaiverReport, statuses: Sequence[WaiverStatus]) -> dict[
         "drop_hold_hours": report.rules.drop_hold.total_seconds() / 3600,
         "locked_teams": {team: iso(clear) for team, clear in sorted(report.locked_teams.items())},
         "week_closed": iso(report.week_closed),
+        "week_closed_clears_at": iso(
+            report.rules.after_game_clear(report.week_closed) if report.week_closed is not None else None
+        ),
         "players": [
             {
                 "player_id": s.player.player_id,

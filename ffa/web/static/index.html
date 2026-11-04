@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="ffa">
+<title>ffa · fantasy football assistant</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header>
+  <nav class="tabs" role="tablist">
+    <button type="button" class="tab active" data-tab="draft" role="tab">Draft</button>
+    <button type="button" class="tab" data-tab="waivers" role="tab">Waivers</button>
+  </nav>
+  <div class="statusline"><span id="status">connecting…</span></div>
+</header>
+
+<main>
+  <section id="panel-draft" class="panel">
+    <div id="draft-banner" class="banner hidden"></div>
+
+    <section class="card" id="board-card">
+      <div class="skeleton">Loading the board…</div>
+    </section>
+
+    <section class="card" id="research-card" hidden>
+      <h2>Recommendation</h2>
+      <div class="body"></div>
+    </section>
+
+    <section class="card" id="shortlist-card" hidden>
+      <h2>Shortlist <span class="sub" id="shortlist-sub"></span></h2>
+      <div class="body"></div>
+      <div class="actions">
+        <button type="button" id="copy-context" class="button">Copy context for Claude</button>
+      </div>
+      <textarea id="context-text" class="context hidden" readonly rows="10"></textarea>
+    </section>
+
+    <section class="card" id="roster-card" hidden>
+      <h2>Your roster <span class="sub" id="roster-sub"></span></h2>
+      <div class="body"></div>
+    </section>
+
+    <section class="card" id="recent-card" hidden>
+      <h2>Recent picks</h2>
+      <div class="body"></div>
+    </section>
+
+    <p class="footnote" id="draft-footnote"></p>
+  </section>
+
+  <section id="panel-waivers" class="panel hidden">
+    <div id="waivers-banner" class="banner hidden"></div>
+
+    <section class="card controls">
+      <label class="field">
+        <span class="label">Player</span>
+        <input type="search" id="waivers-query" placeholder="name, rostered or not"
+               autocomplete="off" enterkeyhint="search" inputmode="search">
+      </label>
+      <div class="chips" id="waivers-positions">
+        <button type="button" class="chip" data-pos="QB">QB</button>
+        <button type="button" class="chip" data-pos="RB">RB</button>
+        <button type="button" class="chip" data-pos="WR">WR</button>
+        <button type="button" class="chip" data-pos="TE">TE</button>
+        <button type="button" class="chip" data-pos="K">K</button>
+        <button type="button" class="chip" data-pos="DEF">DEF</button>
+      </div>
+      <details id="waivers-advanced">
+        <summary>Other league</summary>
+        <label class="field">
+          <span class="label">League ID</span>
+          <input type="text" id="waivers-league" placeholder="defaults to the one in .env"
+                 inputmode="numeric" autocomplete="off">
+        </label>
+      </details>
+      <div class="actions">
+        <button type="button" id="waivers-refresh" class="button">Refresh</button>
+        <span class="sub" id="waivers-age"></span>
+      </div>
+    </section>
+
+    <section class="card" id="waivers-header-card" hidden>
+      <div class="body"></div>
+    </section>
+
+    <section class="card" id="waivers-card">
+      <div class="skeleton">Loading waivers…</div>
+    </section>
+
+    <p class="footnote">
+      An unrostered player is not necessarily a free agent: he is on waivers from his team's
+      kickoff until the league's clear day, for 47h after a drop, and once the week's last
+      game starts everyone is locked — bye teams included.
+    </p>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
