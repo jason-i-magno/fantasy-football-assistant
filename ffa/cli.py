@@ -40,6 +40,9 @@ from .draft.session import (
     resolve_draft_id,
 )
 from .draft.shortlist import context_block
+from .lineup import ui as lineup_ui
+from .lineup.advice import NoRosterError
+from .lineup.source import LineupUnavailable, load_advice
 from .sleeper import SleeperClient, SleeperError, SleeperRateLimited
 from .waivers import ui as waivers_ui
 from .waivers.status import UnsupportedWaivers, build_report, select_statuses
@@ -48,6 +51,7 @@ from .web import (
     DEFAULT_PORT,
     AppState,
     DraftFeed,
+    LineupFeed,
     WaiversFeed,
     make_http_server,
     urls,
@@ -305,6 +309,35 @@ def cmd_waivers(args, console: Console) -> int:
     return EXIT_OK
 
 
+# -- lineup command -----------------------------------------------------------------
+
+
+def cmd_lineup(args, console: Console) -> int:
+    """What to change about the lineup for the week you can still change."""
+    config = _config_for(args)
+    if config.league_id is None:
+        raise ConfigError(["`ffa lineup` needs a league: pass --league or set SLEEPER_LEAGUE_ID."])
+    client = SleeperClient(config.cache_dir)
+    try:
+        advice, sources = load_advice(
+            client,
+            league_id=config.league_id,
+            username=config.sleeper_username,
+            now=datetime.now(timezone.utc),
+            max_adds=args.adds,
+        )
+    except (LineupUnavailable, NoRosterError) as exc:
+        console.print(f"[yellow]{exc}")
+        return EXIT_ERROR
+    finally:
+        client.close()
+    if args.json:
+        print(json.dumps(lineup_ui.advice_json(advice, sources), indent=2))
+    else:
+        console.print(lineup_ui.render(advice, sources))
+    return EXIT_OK
+
+
 # -- serve command -------------------------------------------------------------------
 
 
@@ -331,6 +364,7 @@ def cmd_serve(args, console: Console) -> int:
             exclusions=lambda: _exclusions(args, config),
         ),
         waivers=WaiversFeed(config),
+        lineup=LineupFeed(config),
         token=token,
     )
     try:
@@ -577,6 +611,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                          help="rows to show when not looking players up (default %(default)s)")
     waivers.add_argument("--json", action="store_true", help="print JSON instead of a table")
     waivers.set_defaults(func=cmd_waivers)
+
+    lineup = tools.add_parser("lineup", parents=[common],
+                              help="what to change about your lineup this week, and who to add")
+    lineup.add_argument("--league", help="Sleeper league ID, overriding SLEEPER_LEAGUE_ID")
+    lineup.add_argument("--user", help=user_help)
+    lineup.add_argument("--adds", type=int, default=None, metavar="N",
+                        help="how many waiver adds to rank (default 6)")
+    lineup.add_argument("--json", action="store_true", help="print JSON instead of tables")
+    lineup.set_defaults(func=cmd_lineup)
 
     serve = tools.add_parser("serve", parents=[common],
                              help="run both tools as a web app you can open on your phone")

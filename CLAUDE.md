@@ -11,6 +11,7 @@ uv run pytest tests/test_board.py::test_name     # one test (or -k PATTERN)
 uv run ffa draft replay tests/fixtures/replay_mock_12team.jsonl --snapshot 2   # offline smoke test of the whole pipeline
 uv run ffa draft doctor                          # live: validate .env, resolve IDs, dump raw draft settings
 uv run ffa waivers --league ID --player NAME     # live: free agent or on waivers, and until when
+uv run ffa lineup                                # live: start/sit and waiver calls for the open week
 uv run ffa serve --replay tests/fixtures/replay_mock_12team.jsonl   # offline smoke test of the web app
 uv run ffa serve                                 # live: the web app, on every interface
 ```
@@ -33,13 +34,16 @@ than working around the check.
 
 ## Layout
 
-The CLI is `ffa <tool> [command]`. There are three tools: `ffa draft` (a live Sleeper
-snake-draft assistant), `ffa waivers` (free agent or on waivers, right now), and `ffa serve`
-(both of those as a web app for a phone on the same network).
+The CLI is `ffa <tool> [command]`. There are four tools: `ffa draft` (a live Sleeper
+snake-draft assistant), `ffa waivers` (free agent or on waivers, right now), `ffa lineup`
+(start/sit and waiver calls for the week you can still change), and `ffa serve` (all of
+those as a web app for a phone on the same network).
 
 - `ffa/` top level: code shared across tools — `sleeper.py` (API client), `espn.py` (NFL
   kickoff times, which Sleeper doesn't publish), `config.py`, `models.py`.
-- `ffa/draft/` and `ffa/waivers/`: each tool's logic and rendering.
+- `ffa/draft/`, `ffa/waivers/` and `ffa/lineup/`: each tool's logic and rendering.
+- `ffa/scoring.py`, `ffa/projections.py`, `ffa/espn_fantasy.py`, `ffa/roster.py`: the
+  projection layer, shared because more than one tool needs points and slot rules.
 - `ffa/web/`: the web app (see below).
 - `ffa/cli.py`: the single entry point. Each tool is a subparser; the thin command functions
   for all three live here, with shared helpers like `_config_for` at the bottom.
@@ -84,12 +88,42 @@ included). Its docstring has the details and how they were verified. Only
 only against adds that happened, which cannot catch a player wrongly reported as a free
 agent: check any new rule in that direction too.
 
+## Lineup
+
+`ffa lineup` answers "what should I change before kickoff". `source.py` fetches, `advice.py`
+is pure and does the thinking, `optimal.py` solves, `ui.py` renders. The rules that are easy
+to get wrong, in the order they bite:
+
+- **The target week is the earliest with a game still to kick off**, not Sleeper's
+  `nfl_state.week` (which read 9 while the app still showed week 8) and not "the first week
+  with nothing started" (which would skip to next week halfway through a Sunday). Say which
+  week is being used.
+- **Re-score everything.** Sleeper's `pts_ppr` is standard PPR and ESPN's `appliedTotal` is
+  ESPN's default league; both are re-scored from raw stats with the league's own
+  `scoring_settings` by `ffa/scoring.py`. That scorer reproduced all 625 of the `.env`
+  league's official `players_points` across four completed weeks — re-run that check
+  against a finished week after changing it.
+- **Value is lineup impact, never raw points.** Every number reported is a difference
+  between two solved lineups, so a player behind two better ones is worth zero. `optimal.py`
+  solves it exactly (maximum-weight assignment); the tempting decomposition by position
+  counts is wrong whenever a player is eligible at two positions, and lost up to 12 points
+  on 66 of 400 random rosters before it was replaced. `tests/test_optimal.py` keeps a
+  brute-force cross-check.
+- **A diff of starting *sets*, not of seats.** A lineup scores the same however its eligible
+  players are spread across eligible slots, so a seat-wise comparison reports confident
+  swaps worth nothing on a week whose real gain is zero.
+- **Drops are judged on the rest of the season.** On this week alone every bye-week starter
+  projects zero and looks free to drop.
+- **Byes come from the kickoff schedule.** Both feeds publish a row for a team on bye
+  (Sleeper's empty, ESPN's with `appliedTotal` 0), so "no projection" finds nothing. A
+  player with no NFL team at all is a different thing and must not be called a bye.
+
 ## Web app
 
 `ffa serve` is a WSGI app with no framework and no new dependency: `ffa/web/app.py` routes,
 `state.py` holds the shared feeds, `payload.py` turns a `DraftView` into JSON, and
 `static/` is the whole UI (three files, vanilla JS, no build step — they ship inside the
-package, like `draft/prompts/research.md`).
+package, like `draft/prompts/research.md`). Three tabs: Lineup (the default), Waivers, Draft.
 
 - Nothing fantasy-related lives in the browser. `payload.py` renders the same `DraftView`
   `ui.py` draws, so a fix to the pipeline reaches both surfaces at once. If the UI needs a
@@ -98,9 +132,11 @@ package, like `draft/prompts/research.md`).
   to refetch inside the poll interval, so N phones are still one Sleeper cadence, and it
   polls on request rather than on a timer (no screen open, no traffic). Its error policy
   mirrors `cli._run_loop`, so fix both together.
-- `WaiversFeed` builds each report with a *fresh* `SleeperClient`: that client caches
-  rosters, transactions and the NFL state for its own lifetime, which is right for a
-  one-shot command and wrong for a server that stays up for days.
+- `WaiversFeed` and `LineupFeed` build each report with a *fresh* `SleeperClient`: that
+  client caches rosters, transactions and the NFL state for its own lifetime, which is
+  right for a one-shot command and wrong for a server that stays up for days. `LineupFeed`
+  caches for ten minutes and builds synchronously: a cold build measured about 3.5s, most
+  of it ESPN, which is a better trade than a worker thread and a progress protocol.
 - Read-only by construction: the app rejects anything but GET/HEAD. `--token`/`FFA_WEB_TOKEN`
   gates every route including the static files, and static serving is confined to
   `ffa/web/static` by a `is_relative_to` check — keep both when adding routes.
@@ -121,6 +157,16 @@ package, like `draft/prompts/research.md`).
 - Tunable shortlist weights are named constants at the top of `draft/scarcity.py`.
 - Recordings are JSON Lines (header, then snapshots) tagged `"draftbot-recording/1"`. Keep
   that tag: existing recordings depend on it.
+- **ESPN's projection feed has three traps**, all in the `ffa/espn_fantasy.py` docstring:
+  any `filterStatsFor*` key in `X-Fantasy-Filter` silently strips the projections and
+  returns only actuals; the payload carries two seasons, so `seasonId` must be pinned or you
+  read last season's same-numbered week; and several stats repeat under a second id
+  (41==53, 61==42, 40==24), which double-counts if both are mapped.
+- Sleeper's *season* projection rows report `gp: 18.0` for every position except team
+  defenses, which report `1.0` — taken at face value that values a defense at a whole
+  season's points per week.
+- Sleeper fills `espn_id` for under half the player map, so the ESPN join falls back to
+  normalized name plus team. Strip name suffixes (Jr/III) or players are silently lost.
 - Research credentials are checked in one place, `draft/research.py::build_worker`, which
   returns `(worker, reason)` and never raises; the CLI prints the reason, the web app shows
   it on the recommendation card.
@@ -141,3 +187,7 @@ mixups). Fixtures in `tests/fixtures/`:
   `python tests/fixtures/build_synthetic_replay.py`, which computes pick order on its own
   (it deliberately doesn't import `ffa.draft.board`) so it stays an independent check.
 - `players_nfl.json`: a trimmed `/players/nfl` response, produced by `trim_players.py`.
+
+The lineup tests are hand-made rather than recorded: `tests/test_lineup.py` builds a roster
+from tuples, so no real league data is involved and each test pins one way a feed or a
+shortcut misled the tool against live data.

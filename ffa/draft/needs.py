@@ -7,16 +7,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..models import FANTASY_POSITIONS, Player, RosterSlot
+from ..roster import BENCH, FLEX_ELIGIBILITY
 
 log = logging.getLogger(__name__)
 
-FLEX_ELIGIBILITY: dict[str, frozenset[str]] = {
-    "FLEX": frozenset({"RB", "WR", "TE"}),
-    "WRRB_FLEX": frozenset({"RB", "WR"}),
-    "REC_FLEX": frozenset({"WR", "TE"}),
-    "SUPER_FLEX": frozenset({"QB", "RB", "WR", "TE"}),
-}
-BENCH = "BN"
+__all__ = ["BENCH", "FLEX_ELIGIBILITY"]  # re-exported: both were defined here originally
 
 # Guardrails the shortlist must respect. These are depth caps: a league that *starts* more
 # than the cap (a true 2QB roster) raises its own cap, or the position could never be filled.

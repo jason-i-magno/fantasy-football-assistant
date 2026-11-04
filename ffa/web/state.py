@@ -32,6 +32,8 @@ from ..draft.session import (
     load_exclusions,
     open_session,
 )
+from ..lineup.advice import LineupAdvice, NoRosterError
+from ..lineup.source import LineupSources, LineupUnavailable, load_advice
 from ..sleeper import SleeperClient, SleeperError, SleeperRateLimited
 from ..waivers.status import UnsupportedWaivers, WaiverReport, build_report
 
@@ -41,6 +43,10 @@ RATE_LIMIT_BACKOFF_SECONDS = 30.0
 OPEN_RETRY_SECONDS = 15.0  # a league with no draft shouldn't be re-resolved on every request
 WAIVERS_TTL_SECONDS = 60.0  # waiver windows move in hours; a minute-old report is current
 WAIVERS_ERROR_TTL_SECONDS = 15.0  # don't retry a broken ESPN or Sleeper on every poll
+# Projections move with injury news, not with page refreshes, and a build costs a few
+# seconds and about fifty megabytes from ESPN. Ten minutes is far fresher than the data.
+LINEUP_TTL_SECONDS = 600.0
+LINEUP_ERROR_TTL_SECONDS = 30.0
 LEAGUE_ID = re.compile(r"^\d{1,32}$")
 
 
@@ -289,12 +295,92 @@ class WaiversFeed:
 
 
 @dataclass
+class _CachedAdvice:
+    expires: float
+    built: tuple[LineupAdvice, LineupSources] | None = None
+    error: Exception | None = None
+
+
+class LineupFeed:
+    """Lineup advice per league, rebuilt at most every `ttl` seconds.
+
+    Like `WaiversFeed`, each build gets a fresh `SleeperClient`, because that client caches
+    rosters and the NFL state for its own lifetime -- and a lineup read off a roster cached
+    yesterday would quietly advise on players who have since been dropped.
+
+    The build is synchronous rather than backgrounded, which is a measurement and not an
+    assumption: a cold build takes about three and a half seconds, most of it ESPN's player
+    feed, so a phone waiting on it with a spinner is a better trade than a worker thread and
+    a progress protocol.
+    """
+
+    def __init__(
+        self,
+        config: Config,
+        *,
+        client_factory: Callable[[], Any] | None = None,
+        loader: Callable[..., tuple[LineupAdvice, LineupSources]] = load_advice,
+        ttl: float = LINEUP_TTL_SECONDS,
+        now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        monotonic: Callable[[], float] = time.monotonic,
+    ):
+        self._config = config
+        self._client_factory = client_factory or (lambda: SleeperClient(config.cache_dir))
+        self._loader = loader
+        self._ttl = ttl
+        self._now = now
+        self._monotonic = monotonic
+        self._lock = threading.Lock()
+        self._cache: dict[str, _CachedAdvice] = {}
+
+    def league_id(self, requested: str | None = None) -> str:
+        league = (requested or self._config.league_id or "").strip()
+        if not league:
+            raise FeedUnavailable(
+                "No league configured. Set SLEEPER_LEAGUE_ID in .env, or add ?league=ID to the URL."
+            )
+        if not LEAGUE_ID.match(league):
+            raise FeedUnavailable(f"{league!r} is not a numeric Sleeper league ID.")
+        return league
+
+    def advice(self, requested: str | None = None) -> tuple[LineupAdvice, LineupSources]:
+        league = self.league_id(requested)
+        with self._lock:
+            now = self._monotonic()
+            cached = self._cache.get(league)
+            if cached is not None and now < cached.expires:
+                if cached.error is not None:
+                    raise cached.error
+                assert cached.built is not None
+                return cached.built
+            client = self._client_factory()
+            try:
+                built = self._loader(
+                    client,
+                    league_id=league,
+                    username=self._config.sleeper_username,
+                    now=self._now(),
+                )
+            except (SleeperError, espn.ESPNError, UnsupportedWaivers,
+                    LineupUnavailable, NoRosterError) as exc:
+                self._cache[league] = _CachedAdvice(now + LINEUP_ERROR_TTL_SECONDS, error=exc)
+                raise
+            finally:
+                close = getattr(client, "close", None)
+                if callable(close):
+                    close()
+            self._cache[league] = _CachedAdvice(now + self._ttl, built=built)
+            return built
+
+
+@dataclass
 class AppState:
     """Everything the WSGI app needs, assembled once by `ffa serve`."""
 
     config: Config
     draft: DraftFeed
     waivers: WaiversFeed
+    lineup: LineupFeed
     token: str | None = None
     static_dir: Path = Path(__file__).parent / "static"
 

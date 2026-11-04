@@ -23,6 +23,9 @@ from ..config import ConfigError
 from ..draft import board
 from ..draft.session import SessionError, now_ms
 from ..draft.shortlist import context_block
+from ..lineup import ui as lineup_ui
+from ..lineup.advice import NoRosterError
+from ..lineup.source import LineupUnavailable
 from ..sleeper import SleeperError
 from ..waivers import ui as waivers_ui
 from ..waivers.status import UnsupportedWaivers, select_statuses
@@ -45,6 +48,8 @@ EXPECTED_ERRORS = (
     SleeperError,
     espn.ESPNError,
     UnsupportedWaivers,
+    LineupUnavailable,
+    NoRosterError,
     SessionError,
     ConfigError,
     board.UnsupportedDraftError,
@@ -131,11 +136,17 @@ def _waivers(state: AppState, query, start_response):
     return _json(start_response, {"ok": True, **waivers_ui.report_json(report, shown)})
 
 
+def _lineup(state: AppState, query, start_response):
+    advice, sources = state.lineup.advice(_one(query, "league"))
+    return _json(start_response, {"ok": True, **lineup_ui.advice_json(advice, sources)})
+
+
 ROUTES = {
     "/api/health": _health,
     "/api/draft": _draft,
     "/api/draft/context": _draft_context,
     "/api/waivers": _waivers,
+    "/api/lineup": _lineup,
 }
 
 
