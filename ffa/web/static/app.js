@@ -773,6 +773,11 @@ function renderCandidates(card, candidates) {
         ? el("span", "tag warn", `waivers → ${fmtTime(candidate.clears_at)}`)
         : null;
     row.append(nameBlock(candidate.player, status));
+    if (candidate.player.playoff !== null && candidate.player.playoff !== undefined) {
+      // A claim is a roster decision, so the playoff window belongs on it too.
+      row.querySelector(".lmain").append(
+        el("span", "tag playoff", `${candidate.player.playoff.toFixed(1)}/g playoffs`));
+    }
     if (candidate.drop) {
       const drop = candidate.drop;
       const playoff = drop.playoff === null || drop.playoff === undefined
