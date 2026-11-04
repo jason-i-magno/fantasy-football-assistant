@@ -43,6 +43,7 @@ class Player:
     age: int | None = None
     years_exp: int | None = None
     depth_chart_order: int | None = None
+    espn_id: str | None = None  # join key for ESPN's projections; Sleeper fills it for <half
 
     @property
     def is_defense(self) -> bool:
@@ -87,6 +88,7 @@ class Player:
             age=to_int(raw.get("age")),
             years_exp=to_int(raw.get("years_exp")),
             depth_chart_order=to_int(raw.get("depth_chart_order")),
+            espn_id=str(raw["espn_id"]) if raw.get("espn_id") else None,
         )
 
     @classmethod

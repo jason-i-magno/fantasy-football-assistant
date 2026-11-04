@@ -148,7 +148,8 @@ def test_traded_picks_refetch_only_when_the_pick_count_changes(tmp_path):
 
 RAW_PLAYERS = {
     "1": {"player_id": "1", "position": "RB", "fantasy_positions": ["RB"], "active": True,
-          "search_rank": 5, "team": "SF", "full_name": "Back One", "espn_id": 77},
+          "search_rank": 5, "team": "SF", "full_name": "Back One", "espn_id": 77,
+          "hashtag": "#BackOne-NFL-SF-1", "practice_participation": None},
     "2": {"player_id": "2", "position": "OL", "fantasy_positions": ["OL"], "active": True},
     "DET": {"player_id": "DET", "position": "DEF", "fantasy_positions": ["DEF"], "team": "DET",
             "active": True},
@@ -158,8 +159,10 @@ RAW_PLAYERS = {
 def test_filter_players_drops_non_fantasy_and_trims_fields():
     filtered = filter_players(RAW_PLAYERS)
     assert set(filtered) == {"1", "DET"}
-    assert "espn_id" not in filtered["1"]
+    assert "hashtag" not in filtered["1"] and "practice_participation" not in filtered["1"]
     assert filtered["1"]["search_rank"] == 5
+    # Kept on purpose: ffa/projections.py joins ESPN's feed on it.
+    assert filtered["1"]["espn_id"] == 77
 
 
 def test_players_cached_to_disk_for_the_day(tmp_path):
@@ -222,3 +225,17 @@ def test_unusable_nfl_state_is_an_error(tmp_path):
     client, _ = make_client(tmp_path, {"/v1/state/nfl": {"week": 7}})
     with pytest.raises(SleeperError, match="NFL state"):
         client.nfl_state()
+
+
+def test_players_cache_from_an_older_field_set_is_refetched(tmp_path):
+    """A cache written before PLAYER_FIELDS grew must not be served with the field missing."""
+    (tmp_path / "players_nfl.json").write_text(
+        json.dumps({"version": 1, "date": date(2026, 9, 15).isoformat(),
+                    "players": {"1": {"player_id": "1", "position": "RB"}}})
+    )
+    client, recorder = make_client(
+        tmp_path, {"/v1/players/nfl": [(200, RAW_PLAYERS)]}, today=lambda: date(2026, 9, 15)
+    )
+    players, _ = client.players()
+    assert recorder.count("/v1/players/nfl") == 1  # the stale schema was ignored
+    assert players["1"]["espn_id"] == 77

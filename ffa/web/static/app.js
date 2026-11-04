@@ -452,7 +452,7 @@ $("#copy-context").addEventListener("click", async (event) => {
 
 // -- waivers --------------------------------------------------------------------------
 
-const waivers = { data: null, limit: 25, positions: new Set(), query: "", league: "", timer: null, debounce: null };
+const waivers = { data: null, limit: 25, positions: new Set(), query: "", timer: null, debounce: null };
 
 async function loadWaivers() {
   window.clearTimeout(waivers.timer);
@@ -460,7 +460,7 @@ async function loadWaivers() {
   if (!waivers.data) card.replaceChildren(el("div", "skeleton", "Loading waivers…"));
   try {
     const data = await api("/api/waivers", {
-      league: waivers.league,
+      league: leagues.chosen,
       q: waivers.query,
       pos: [...waivers.positions],
       limit: waivers.limit,
@@ -570,17 +570,213 @@ $("#waivers-positions").addEventListener("click", (event) => {
   loadWaivers();
 });
 
-$("#waivers-league").addEventListener("change", (event) => {
-  waivers.league = event.target.value.trim();
-  waivers.data = null;
-  loadWaivers();
-});
 
 $("#waivers-refresh").addEventListener("click", () => loadWaivers());
 
+// -- leagues --------------------------------------------------------------------------
+
+// One league for the whole app: the lineup and waiver tabs are always looking at the same
+// one, so the control belongs in the header rather than twice in the panels.
+const leagues = { list: [], chosen: stored("ffa-league") || "" };
+
+async function loadLeagues() {
+  try {
+    const data = await api("/api/leagues");
+    leagues.list = data.leagues || [];
+  } catch (error) {
+    leagues.list = [];
+  }
+  const known = leagues.list.some((l) => l.league_id === leagues.chosen);
+  if (leagues.chosen && !known) leagues.chosen = "";  // a league that is no longer configured
+  renderLeagues();
+}
+
+function renderLeagues() {
+  const bar = $("#league-chips");
+  // With one league there is nothing to choose, so the bar stays out of the way.
+  show(bar, leagues.list.length > 1 && state.tab !== "draft");
+  clear(bar);
+  const active = leagues.chosen || (leagues.list.find((l) => l.default) || {}).league_id || "";
+  leagues.list.forEach((league) => {
+    const chip = el("button", "chip", league.name);
+    chip.type = "button";
+    chip.dataset.league = league.league_id;
+    if (league.league_id === active) chip.classList.add("on");
+    if (!league.available) chip.classList.add("off");
+    bar.append(chip);
+  });
+}
+
+function chooseLeague(leagueId) {
+  if (leagues.chosen === leagueId) return;
+  leagues.chosen = leagueId;
+  store("ffa-league", leagueId);
+  lineup.data = null;
+  waivers.data = null;
+  renderLeagues();
+  if (state.tab === "lineup") loadLineup();
+  else if (state.tab === "waivers") loadWaivers();
+}
+
+$("#league-chips").addEventListener("click", (event) => {
+  const chip = event.target.closest(".chip");
+  if (chip) chooseLeague(chip.dataset.league);
+});
+
+// -- lineup ---------------------------------------------------------------------------
+
+const lineup = { data: null, error: null, fetchedAt: 0, timer: null };
+
+async function loadLineup() {
+  const summary = $("#lineup-summary-card");
+  if (!lineup.data) summary.replaceChildren(el("div", "skeleton", "Working out your week…"));
+  try {
+    const data = await api("/api/lineup", { league: leagues.chosen });
+    lineup.data = data;
+    lineup.error = null;
+    lineup.fetchedAt = Date.now();
+    banner($("#lineup-banner"), null);
+    renderLineup(data);
+  } catch (error) {
+    lineup.error = error.message;
+    banner($("#lineup-banner"), error.message, "error");
+    if (!lineup.data) summary.replaceChildren(el("div", "skeleton", "No lineup advice yet."));
+  }
+  tickStatus();
+}
+
+function pointsCell(value) {
+  const cell = el("span", "proj", Number(value).toFixed(1));
+  if (value <= 0) cell.classList.add("zero");
+  return cell;
+}
+
+function nameBlock(player, extra) {
+  const main = el("div", "lmain");
+  main.append(el("span", "name", player.name));
+  main.append(el("span", "tag", `${player.position}${player.team ? " · " + player.team : ""}`));
+  if (player.locked) main.append(el("span", "tag locked", "locked"));
+  if (player.on_bye) main.append(el("span", "tag warn", "bye"));
+  if (player.disputed) main.append(el("span", "tag warn", `±${player.spread.toFixed(1)}`));
+  if (extra) main.append(extra);
+  return main;
+}
+
+function why(row, player) {
+  if (player.reasons && player.reasons.length) {
+    row.append(el("div", "lwhy", player.reasons.join("; ")));
+  }
+}
+
+function playerRow(player, extra) {
+  const row = el("div", "lrow");
+  row.append(nameBlock(player, extra));
+  row.append(pointsCell(player.points));
+  why(row, player);
+  return row;
+}
+
+function seatRow(seat) {
+  const row = el("div", "lrow seat");
+  row.append(el("span", "slot", seat.slot));
+  if (!seat.player) {
+    row.append(el("div", "lmain", "empty"));
+    row.append(el("span", "proj zero", "—"));
+    return row;
+  }
+  const swapTo = seat.swap_to ? el("span", "tag swapto", `→ ${seat.swap_to.name}`) : null;
+  row.append(nameBlock(seat.player, swapTo));
+  row.append(pointsCell(seat.player.points));
+  why(row, seat.player);
+  return row;
+}
+
+function renderLineup(data) {
+  // Summary.
+  const summary = clear($("#lineup-summary-card"));
+  summary.append(el("div", "name", `${data.league} · NFL week ${data.week}`));
+  if (data.settled) {
+    summary.append(el("div", "notice good", "This is already the best lineup this roster can field."));
+  } else {
+    summary.append(el("div", "notice warn",
+      `Change your lineup for +${data.gain.toFixed(1)} points: ` +
+      `${data.current_total.toFixed(1)} → ${data.optimal_total.toFixed(1)}.`));
+  }
+  if (data.first_kickoff) {
+    summary.append(el("div", "wline",
+      `First game ${fmtTime(data.first_kickoff)}. Each player locks at his own kickoff.`));
+  }
+  const sources = data.sources || {};
+  summary.append(el("div", "wline dim",
+    `Projections: Sleeper${sources.espn ? " blended with ESPN" : " only"}, ` +
+    `re-scored with this league's settings.` + (sources.espn_note ? ` ESPN: ${sources.espn_note}` : "")));
+  (data.notes || []).forEach((note) => summary.append(el("div", "wline dim", note)));
+
+  // The moves, which is the whole point of the tab.
+  const movesCard = $("#lineup-moves-card");
+  show(movesCard, (data.swaps || []).length > 0);
+  const moves = clear(movesCard.querySelector(".body"));
+  (data.swaps || []).forEach((swap) => {
+    const row = el("div", "lrow cand swap");
+    row.append(el("span", "gain", `+${swap.gain.toFixed(1)}`));
+    const main = el("div", "lmain");
+    main.append(el("span", "name", swap.in.name));
+    main.append(el("span", "tag", `into ${swap.slot}`));
+    if (swap.out) main.append(el("span", "tag out", `for ${swap.out.name}`));
+    row.append(main);
+    moves.append(row);
+  });
+
+  // The lineup as it stands.
+  const card = $("#lineup-card");
+  show(card, true);
+  $("#lineup-sub").textContent = `${data.current_total.toFixed(1)} pts as set`;
+  const body = clear(card.querySelector(".body"));
+  (data.lineup || []).forEach((seat) => body.append(seatRow(seat)));
+
+  // Bench, adds, watchlist.
+  const benchCard = $("#lineup-bench-card");
+  show(benchCard, (data.bench || []).length > 0);
+  const bench = clear(benchCard.querySelector(".body"));
+  (data.bench || []).forEach((player) => {
+    const row = playerRow(player, el("span", "tag", `${player.keep.toFixed(1)}/g rest`));
+    bench.append(row);
+  });
+
+  renderCandidates($("#lineup-adds-card"), data.adds || []);
+  renderCandidates($("#lineup-watch-card"), data.watch || []);
+  $("#lineup-age").textContent = `as of ${fmtTime(data.now)}`;
+}
+
+function renderCandidates(card, candidates) {
+  show(card, candidates.length > 0);
+  if (!candidates.length) return;
+  const body = clear(card.querySelector(".body"));
+  candidates.forEach((candidate) => {
+    const row = el("div", "lrow cand");
+    row.append(el("span", "gain", `+${candidate.gain.toFixed(1)}`));
+    const status = candidate.available_now
+      ? el("span", "tag good", "free agent")
+      : candidate.clears_at
+        ? el("span", "tag warn", `waivers → ${fmtTime(candidate.clears_at)}`)
+        : null;
+    row.append(nameBlock(candidate.player, status));
+    if (candidate.drop) {
+      row.append(el("div", "lwhy", `Drop ${candidate.drop.name} (${candidate.drop.keep.toFixed(1)}/g rest of season)`));
+    }
+    if (candidate.player.reasons && candidate.player.reasons.length) {
+      row.append(el("div", "lwhy", candidate.player.reasons.join("; ")));
+    }
+    body.append(row);
+  });
+}
+
+$("#lineup-refresh").addEventListener("click", () => { lineup.data = null; loadLineup(); });
+
 // -- tabs, freshness, visibility ------------------------------------------------------
 
-const state = { tab: "draft" };
+const TABS = ["lineup", "waivers", "draft"];
+const state = { tab: "lineup" };
 
 function tickStatus() {
   if (state.tab === "draft") {
@@ -592,6 +788,15 @@ function tickStatus() {
     const suffix = research === "researching" ? " · researching" : research === "ready" ? " · research ready" : "";
     return setStatus(kind, `${draft.data.board.status} · updated ${age}s ago${suffix}`);
   }
+  if (state.tab === "lineup") {
+    if (lineup.error && !lineup.data) return setStatus("down", lineup.error);
+    if (!lineup.data) return setStatus("", "working it out…");
+    const data = lineup.data;
+    const text = data.settled
+      ? `week ${data.week} · lineup is optimal`
+      : `week ${data.week} · +${data.gain.toFixed(1)} available`;
+    return setStatus(data.settled ? "live" : "stale", text);
+  }
   if (!waivers.data) return setStatus("", "loading…");
   setStatus("live", `week ${waivers.data.week} · as of ${fmtTime(waivers.data.now)}`);
 }
@@ -600,16 +805,15 @@ function selectTab(name) {
   state.tab = name;
   store("ffa-tab", name);
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === name));
-  $("#panel-draft").classList.toggle("hidden", name !== "draft");
-  $("#panel-waivers").classList.toggle("hidden", name !== "waivers");
+  TABS.forEach((tab) => $(`#panel-${tab}`).classList.toggle("hidden", tab !== name));
   if (window.location.hash !== `#${name}`) window.history.replaceState({}, "", `#${name}`);
-  if (name === "draft") {
-    pollDraft();
-    window.clearTimeout(waivers.timer);
-  } else {
-    window.clearTimeout(draft.timer);
-    loadWaivers();
-  }
+  // Only the visible tab polls: nothing is fetched for a screen nobody is looking at.
+  window.clearTimeout(draft.timer);
+  window.clearTimeout(waivers.timer);
+  renderLeagues();
+  if (name === "draft") pollDraft();
+  else if (name === "waivers") loadWaivers();
+  else if (!lineup.data) loadLineup();
   tickStatus();
 }
 
@@ -632,4 +836,7 @@ window.setInterval(() => {
   tickStatus();
 }, 1000);
 
-selectTab((window.location.hash || "").slice(1) === "waivers" ? "waivers" : stored("ffa-tab") === "waivers" ? "waivers" : "draft");
+// Lineup is the default: a draft happens on a handful of days a year, a lineup every week.
+loadLeagues();
+const requested = (window.location.hash || "").slice(1);
+selectTab(TABS.includes(requested) ? requested : TABS.includes(stored("ffa-tab")) ? stored("ffa-tab") : "lineup");

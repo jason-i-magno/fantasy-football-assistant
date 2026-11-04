@@ -4,7 +4,8 @@ Tools for Sleeper fantasy football leagues, run as `ffa <tool> [command]`:
 
 - `ffa draft` — a live snake-draft assistant.
 - `ffa waivers` — which unrostered players are free agents, and which are on waivers until when.
-- `ffa serve` — both of those as a web app, for the phone in your hand during the draft.
+- `ffa lineup` — what to change about your lineup this week, and who to claim.
+- `ffa serve` — all of those as a web app, for the phone in your hand.
 
 ## Setup
 
@@ -12,6 +13,28 @@ Tools for Sleeper fantasy football leagues, run as `ffa <tool> [command]`:
 uv sync
 cp .env.example .env   # fill in SLEEPER_USERNAME and SLEEPER_LEAGUE_ID (or DRAFT_ID)
 ```
+
+### More than one league
+
+Most managers are in several. List them in `SLEEPER_LEAGUE_IDS`, default first:
+
+```bash
+SLEEPER_LEAGUE_ID=11111111111111111       # the default
+SLEEPER_LEAGUE_IDS=11111111111111111,2222222222222222
+```
+
+Then refer to them the way you say them rather than by nineteen digits — `--league` takes a
+name, matched case-insensitively on exact, prefix, then substring, and refuses an ambiguous
+one instead of guessing:
+
+```bash
+uv run ffa lineup --league dynasty
+uv run ffa waivers --league "work league" --pos RB
+```
+
+On the phone they appear as chips under the tabs, shared by the Lineup and Waivers tabs so
+the two can never be looking at different leagues. The bar only appears when you have more
+than one.
 
 ## Draft assistant
 
@@ -95,7 +118,7 @@ clock.
 uv run ffa waivers                       # top unrostered players: free agent, or on waivers until when
 uv run ffa waivers --pos RB --pos WR     # only these positions
 uv run ffa waivers --player "Pitts"      # look players up by name, rostered or not
-uv run ffa waivers --league ID --json    # another league than SLEEPER_LEAGUE_ID; JSON for scripts
+uv run ffa waivers --league dynasty --json  # another league, by name or ID; JSON for scripts
 ```
 
 Sleeper's API has no waiver-status field, and an unrostered player isn't necessarily a free
@@ -117,6 +140,62 @@ bye-week claims that blind spot hid. Kickoff times come from ESPN's
 public scoreboard API, since Sleeper doesn't publish them. Leagues using custom daily waivers
 are refused rather than guessed at. Times print in your machine's timezone.
 
+## Lineup
+
+```bash
+uv run ffa lineup                  # this week: what to start, who to add, who to drop
+uv run ffa lineup --league dynasty # another league, by name or by ID
+uv run ffa lineup --adds 10        # rank more waiver candidates
+uv run ffa lineup --json
+```
+
+Answers the question you actually have a couple of times a week: *given what I own, what
+should I change before kickoff?*
+
+**Which week.** The one you can still change — the earliest week with a game still to kick
+off. That keeps it on the coming Sunday all the way through that Sunday's late games and
+rolls over only once the week's last game has started. It is not Sleeper's `nfl_state.week`,
+which flips on its own schedule. The report always names the week it used.
+
+**Where the numbers come from.** Two independent sources, neither used as published:
+
+- **Sleeper** serves RotoWire's projections, scored under standard PPR.
+- **ESPN** serves its own, scored under ESPN's default league.
+
+Both are re-scored from raw stats with *your* league's `scoring_settings`, so what you see
+is points in your league rather than generic ones. That scorer is checked against reality
+rather than trusted: it reproduces Sleeper's own official `players_points` exactly — 625 of
+625 player-weeks across four completed weeks of the `.env` league, kickers and team defenses
+included. Run that check again after touching the scoring code.
+
+Two sources rather than one because a single source cannot be checked. When they disagree by
+five points or more the player is flagged rather than quietly averaged. Kickers come from
+Sleeper alone: ESPN reports made field goals under 40 yards as one bucket where most leagues
+score three separate tiers, and there is no honest way to split it.
+
+**Every number is lineup impact.** Not raw points — what a change does to the best lineup you
+can actually field. Points on the bench are worth zero, so a good receiver behind two better
+receivers is worth nothing this week and the tool says so instead of recommending him. The
+lineup itself is solved exactly, as a maximum-weight assignment, which matters more than it
+sounds: a greedy fill spends a flex slot before it has seen the tight end, and the obvious
+shortcut of fixing how many start at each position is wrong as soon as one player is eligible
+at two of them.
+
+**Adds are asked twice**, because "who helps me on Sunday" and "who should I own" have
+different answers:
+
+- **Add this week** values everyone at this week's projection, which is what makes a
+  streaming defense the right call when yours is on a bye.
+- **Worth owning** values everyone at his per-game pace, which is what surfaces a back who
+  took over a backfield on Sunday and whose projection has not caught up — and what stops a
+  backup quarterback with one big week from looking like a pickup.
+
+On a full roster every add names its drop, chosen on rest-of-season value rather than on the
+week in front of you. Judged on one week alone, every starter on a bye projects zero and
+looks free to drop, which is how you trade a season-long starter for a one-week streamer.
+Whether you can actually make the claim comes from the same rules as `ffa waivers`: free
+agent now, or on waivers until a stated time.
+
 ## Phone app
 
 ```bash
@@ -125,8 +204,9 @@ uv run ffa serve --token SECRET  # require a token (or set FFA_WEB_TOKEN in .env
 uv run ffa serve --replay tests/fixtures/replay_mock_12team.jsonl   # try it with no draft on
 ```
 
-`ffa serve` puts both tools behind a small web app: the board, clock, shortlist,
-recommendation and your roster on one tab, the waiver list on the other. It binds to every
+`ffa serve` puts all three tools behind a small web app: this week's lineup call on one tab,
+the waiver list on the second, and the live draft board on the third. It opens on Lineup,
+since a draft happens on a handful of days a year and a lineup every week. It binds to every
 interface so the phone can reach it, and prints the LAN URL to type in.
 
 - **The same pipeline.** Each poll runs `compute_view` exactly as `watch` does, and the page
@@ -134,8 +214,9 @@ interface so the phone can reach it, and prints the LAN URL to type in.
   are the same numbers.
 - **One poll serves every screen.** The board is fetched at `POLL_INTERVAL_SECONDS` and
   shared; five open tabs are still one request, and nothing is polled while no screen is
-  open. Waiver reports are rebuilt at most once a minute, each from a fresh client so
-  rosters and transactions don't go stale on a server that stays up for days.
+  open. Waiver reports are rebuilt at most once a minute and lineup advice every ten,
+  each from a fresh client so rosters and transactions don't go stale on a server that
+  stays up for days.
 - **Read-only, like everything else here.** Sleeper's API can't be written to and the app has
   no route that changes anything, so the worst someone on your network can do is read your
   league. If that matters, `--token SECRET` locks it: open `http://host:8765/?token=SECRET`

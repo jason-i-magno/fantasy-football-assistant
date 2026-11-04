@@ -13,14 +13,63 @@
 <body>
 <header>
   <nav class="tabs" role="tablist">
-    <button type="button" class="tab active" data-tab="draft" role="tab">Draft</button>
+    <button type="button" class="tab active" data-tab="lineup" role="tab">Lineup</button>
     <button type="button" class="tab" data-tab="waivers" role="tab">Waivers</button>
+    <button type="button" class="tab" data-tab="draft" role="tab">Draft</button>
   </nav>
+  <div class="chips leagues" id="league-chips" hidden></div>
   <div class="statusline"><span id="status">connecting…</span></div>
 </header>
 
 <main>
-  <section id="panel-draft" class="panel">
+  <section id="panel-lineup" class="panel">
+    <div id="lineup-banner" class="banner hidden"></div>
+
+    <section class="card" id="lineup-summary-card">
+      <div class="skeleton">Working out your week…</div>
+    </section>
+
+    <section class="card" id="lineup-moves-card" hidden>
+      <h2>Make these changes</h2>
+      <div class="body"></div>
+    </section>
+
+    <section class="card" id="lineup-card" hidden>
+      <h2>Lineup <span class="sub" id="lineup-sub"></span></h2>
+      <div class="body"></div>
+    </section>
+
+    <section class="card" id="lineup-bench-card" hidden>
+      <h2>Bench</h2>
+      <div class="body"></div>
+    </section>
+
+    <section class="card" id="lineup-adds-card" hidden>
+      <h2>Add this week <span class="sub">lineup points per week</span></h2>
+      <div class="body"></div>
+    </section>
+
+    <section class="card" id="lineup-watch-card" hidden>
+      <h2>Worth owning <span class="sub">rest of season, per game</span></h2>
+      <div class="body"></div>
+    </section>
+
+    <section class="card controls">
+      <div class="actions">
+        <button type="button" id="lineup-refresh" class="button">Refresh</button>
+        <span class="sub" id="lineup-age"></span>
+      </div>
+    </section>
+
+    <p class="footnote" id="lineup-footnote">
+      Projections are Sleeper's (RotoWire) blended with ESPN's, both re-scored with this
+      league's own settings — so these are points in your league, not generic ones. Every
+      number is lineup impact: what a change does to the best lineup you can field, which is
+      why a good player behind two better ones is worth nothing.
+    </p>
+  </section>
+
+  <section id="panel-draft" class="panel hidden">
     <div id="draft-banner" class="banner hidden"></div>
 
     <section class="card" id="board-card">
@@ -71,14 +120,6 @@
         <button type="button" class="chip" data-pos="K">K</button>
         <button type="button" class="chip" data-pos="DEF">DEF</button>
       </div>
-      <details id="waivers-advanced">
-        <summary>Other league</summary>
-        <label class="field">
-          <span class="label">League ID</span>
-          <input type="text" id="waivers-league" placeholder="defaults to the one in .env"
-                 inputmode="numeric" autocomplete="off">
-        </label>
-      </details>
       <div class="actions">
         <button type="button" id="waivers-refresh" class="button">Refresh</button>
         <span class="sub" id="waivers-age"></span>

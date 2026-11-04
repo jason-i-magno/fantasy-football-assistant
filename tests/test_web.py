@@ -12,10 +12,19 @@ import pytest
 from ffa.config import load_config
 from ffa.draft.research import PlayerVerdict, Research
 from ffa.draft.session import ReplaySource, SessionError
+from ffa.lineup.source import LineupUnavailable
 from ffa.sleeper import SleeperError, SleeperRateLimited
 from ffa.waivers.status import FREE_AGENT, WAIVERS
-from ffa.web import AppState, DraftFeed, WaiversFeed, create_app, urls
-from ffa.web.state import OPEN_RETRY_SECONDS, WAIVERS_TTL_SECONDS
+from ffa.web import (
+    AppState,
+    DraftFeed,
+    LeagueDirectory,
+    LineupFeed,
+    WaiversFeed,
+    create_app,
+    urls,
+)
+from ffa.web.state import LINEUP_TTL_SECONDS, OPEN_RETRY_SECONDS, WAIVERS_TTL_SECONDS
 
 # The waiver fakes live with the tests that drive them hardest; `tests/` is importable.
 from test_waivers import SAT_NIGHT, FakeSleeper, fake_kickoffs
@@ -102,6 +111,7 @@ def build_state(
     source=None,
     client_factory=None,
     config=None,
+    lineup_loader=None,
 ):
     clock = clock or Clock()
     config = config or make_config()
@@ -125,8 +135,24 @@ def build_state(
         now=lambda: SAT_NIGHT,
         monotonic=clock,
     )
-    state = AppState(config=config, draft=draft, waivers=waivers, token=token)
+    lineup = LineupFeed(
+        config,
+        client_factory=client_factory or (lambda: FakeSleeper(SAT_NIGHT)),
+        loader=lineup_loader or _no_projections,
+        now=lambda: SAT_NIGHT,
+        monotonic=clock,
+    )
+    state = AppState(config=config, draft=draft, waivers=waivers, lineup=lineup, token=token)
     return state, clock, source
+
+
+def _no_projections(client, **kwargs):
+    """The default lineup loader here: no projections, so the route 503s with a reason.
+
+    The projection layer has its own tests in `tests/test_lineup.py`; these ones are about
+    the web app, and a test that needed both would be testing neither well.
+    """
+    raise LineupUnavailable("No projections in tests.")
 
 
 @pytest.fixture
@@ -398,3 +424,114 @@ def test_the_static_ui_only_talks_to_endpoints_that_exist():
     for route in ROUTES:
         if route != "/api/health":
             assert f'"{route}"' in script, f"{route} is served but the UI never calls it"
+
+
+# -- the lineup endpoint ---------------------------------------------------------------
+
+
+def _advice_loader(calls):
+    """A loader that builds real advice from the hand-made roster in test_lineup."""
+    from test_lineup import SETTLED_BENCH, SETTLED_STARTERS, roster_world
+    from ffa.lineup.advice import build_advice
+    from ffa.lineup.source import LineupSources
+
+    def load(client, **kwargs):
+        calls.append(kwargs)
+        world = roster_world(SETTLED_STARTERS, SETTLED_BENCH,
+                             free_agents=[("fa_te", "TE", 12.0, 12.0)])
+        return build_advice(**world), LineupSources(sleeper=True, espn=True)
+
+    return load
+
+
+def test_lineup_payload_carries_the_whole_screen(recording):
+    calls = []
+    state, _, _ = build_state(recording, lineup_loader=_advice_loader(calls))
+    with httpx.Client(transport=httpx.WSGITransport(app=create_app(state)),
+                      base_url="http://ffa.test") as client:
+        body = client.get("/api/lineup").json()
+    assert body["ok"] and body["week"] == 9
+    assert [seat["slot"] for seat in body["lineup"]] == [
+        "QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "FLEX", "K", "DEF"
+    ]
+    assert body["settled"] is True and body["swaps"] == []
+    assert body["sources"] == {"sleeper": True, "espn": True, "espn_note": None}
+    # Every number the phone draws is already computed: no arithmetic left in the browser.
+    first = body["lineup"][0]["player"]
+    assert {"points", "keep", "reasons", "on_bye", "disputed"} <= set(first)
+
+
+def test_one_build_serves_every_screen(recording):
+    """A build costs seconds and fifty megabytes from ESPN; two phones must not cause two."""
+    calls = []
+    state, clock, _ = build_state(recording, lineup_loader=_advice_loader(calls))
+    with httpx.Client(transport=httpx.WSGITransport(app=create_app(state)),
+                      base_url="http://ffa.test") as client:
+        client.get("/api/lineup")
+        client.get("/api/lineup")
+        assert len(calls) == 1
+        clock.advance(LINEUP_TTL_SECONDS + 1)
+        client.get("/api/lineup")
+    assert len(calls) == 2
+
+
+def test_a_league_with_no_projections_explains_itself(recording):
+    state, _, _ = build_state(recording)  # the default loader raises LineupUnavailable
+    with httpx.Client(transport=httpx.WSGITransport(app=create_app(state)),
+                      base_url="http://ffa.test") as client:
+        response = client.get("/api/lineup")
+    assert response.status_code == 503
+    assert "No projections" in response.json()["error"]
+
+
+def test_a_bad_league_id_is_refused_before_anything_is_fetched(recording):
+    calls = []
+    state, _, _ = build_state(recording, lineup_loader=_advice_loader(calls))
+    with httpx.Client(transport=httpx.WSGITransport(app=create_app(state)),
+                      base_url="http://ffa.test") as client:
+        response = client.get("/api/lineup", params={"league": "../etc"})
+    assert response.status_code == 503 and calls == []
+
+
+def test_the_league_picker_lists_what_is_configured(recording):
+    config = make_config(SLEEPER_LEAGUE_IDS="123, 456")
+    state, _, _ = build_state(recording, config=config)
+    state.leagues = LeagueDirectory(
+        config, client_factory=lambda: _FakeLeagues({"123": "First", "456": "Second"})
+    )
+    with httpx.Client(transport=httpx.WSGITransport(app=create_app(state)),
+                      base_url="http://ffa.test") as client:
+        body = client.get("/api/leagues").json()
+    assert body["leagues"] == [
+        {"league_id": "123", "name": "First", "default": True, "available": True},
+        {"league_id": "456", "name": "Second", "default": False, "available": True},
+    ]
+
+
+def test_league_names_are_fetched_once(recording):
+    config = make_config(SLEEPER_LEAGUE_IDS="123, 456")
+    calls = []
+    state, clock, _ = build_state(recording, config=config)
+    state.leagues = LeagueDirectory(
+        config,
+        client_factory=lambda: _FakeLeagues({"123": "First", "456": "Second"}, calls),
+        monotonic=clock,
+    )
+    with httpx.Client(transport=httpx.WSGITransport(app=create_app(state)),
+                      base_url="http://ffa.test") as client:
+        client.get("/api/leagues")
+        client.get("/api/leagues")
+    assert len(calls) == 2  # two leagues, one pass: the second request was served from cache
+
+
+class _FakeLeagues:
+    def __init__(self, names, calls=None):
+        self._names = names
+        self._calls = calls if calls is not None else []
+
+    def league(self, league_id):
+        self._calls.append(league_id)
+        return {"name": self._names[league_id]}
+
+    def close(self):
+        pass

@@ -12,6 +12,9 @@
 | /draft/<id>/picks              | never cached; fetched on every poll                         |
 | /draft/<id>/traded_picks       | once, then again whenever the pick count changes            |
 | /players/nfl?active=true       | once per calendar day on disk; never refetched mid-run      |
+| /league/<id>/matchups/<week>   | once per run                                                |
+| /projections/nfl/<season>/<wk> | once per run (weekly projections; see PROJECTIONS_URL)      |
+| /projections/nfl/<season>      | once per run (season totals, for the staleness check)       |
 
 Errors: 5xx and network failures retry with exponential backoff. A 429 raises
 `SleeperRateLimited` immediately so the caller can back off hard without freezing the live
@@ -37,6 +40,10 @@ from .models import FANTASY_POSITIONS
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://api.sleeper.app/v1"
+# Projections live outside /v1 and are undocumented. One row per player per week, each
+# tagged `company` -- in practice always "rotowire", Sleeper's single projection source.
+PROJECTIONS_URL = "https://api.sleeper.app/projections/nfl"
+PROJECTION_POSITIONS = ("QB", "RB", "WR", "TE", "K", "DEF")
 DRAFT_REFRESH_SECONDS = 30.0
 PLAYERS_CACHE_FILE = "players_nfl.json"
 # Fields kept from each /players/nfl entry; the other ~40 ID/bio fields are dropped.
@@ -44,7 +51,13 @@ PLAYER_FIELDS = (
     "player_id", "first_name", "last_name", "full_name", "position", "fantasy_positions",
     "team", "search_rank", "active", "status", "injury_status", "injury_body_part",
     "age", "years_exp", "depth_chart_position", "depth_chart_order", "number", "news_updated",
+    # `espn_id` is the join key for ESPN's projection feed (ffa/projections.py). Sleeper
+    # fills it for only a minority of players, so that join falls back to name and team.
+    "espn_id",
 )
+# Bumped whenever PLAYER_FIELDS changes: the cache is keyed by date, so without this a
+# trimmed copy written earlier the same day would be served missing the new field.
+PLAYERS_CACHE_VERSION = 2
 
 
 class SleeperError(Exception):
@@ -228,14 +241,60 @@ class SleeperClient:
         self._players = (players, today)
         return self._players
 
+    def matchups(self, league_id: str, week: int) -> list[dict[str, Any]]:
+        """One week's matchups, which carry each roster's lineup for that week.
+
+        A roster's own `starters` is whatever is set for Sleeper's current week; the matchup
+        is where the lineup for a *specific* week lives, including one not yet played.
+        """
+        data = self._once_per_run(
+            f"matchups:{league_id}:{week}",
+            f"/league/{league_id}/matchups/{int(week)}",
+            f"week {week} matchups for league {league_id}",
+        )
+        return data if isinstance(data, list) else []
+
+    def projections_week(self, season: str, week: int) -> list[dict[str, Any]]:
+        """RotoWire's projection rows for one week, as Sleeper serves them.
+
+        Every player in the pool gets a row; only a few hundred carry real stats, the rest
+        just an ADP field. The caller re-scores the raw stats with the league's own
+        `scoring_settings` rather than trusting the row's `pts_ppr`.
+        """
+        data = self._once_per_run(
+            f"proj:{season}:{week}",
+            f"{PROJECTIONS_URL}/{season}/{int(week)}",
+            f"week {week} projections",
+            params={"season_type": "regular", "order_by": "ppr",
+                    "position[]": list(PROJECTION_POSITIONS)},
+        )
+        return data if isinstance(data, list) else []
+
+    def projections_season(self, season: str) -> list[dict[str, Any]]:
+        """Season-total projection rows, the input to the role-change check.
+
+        These reflect the preseason depth chart and are not revised when a starter goes
+        down, which is exactly why `ffa/projections.py` compares them against a fresh
+        weekly number instead of averaging the two.
+        """
+        data = self._once_per_run(
+            f"proj:{season}",
+            f"{PROJECTIONS_URL}/{season}",
+            f"{season} season projections",
+            params={"season_type": "regular", "order_by": "ppr",
+                    "position[]": list(PROJECTION_POSITIONS)},
+        )
+        return data if isinstance(data, list) else []
+
     # -- plumbing -------------------------------------------------------------------
 
-    def _once_per_run(self, key: str, path: str, what: str) -> Any:
+    def _once_per_run(self, key: str, path: str, what: str,
+                      params: dict[str, Any] | None = None) -> Any:
         if key not in self._once:
-            self._once[key] = self._get_json(path, what=what)
+            self._once[key] = self._get_json(path, what=what, params=params)
         return self._once[key]
 
-    def _get_json(self, path: str, *, what: str, params: dict[str, str] | None = None) -> Any:
+    def _get_json(self, path: str, *, what: str, params: dict[str, Any] | None = None) -> Any:
         for attempt in range(self._max_retries + 1):
             final = attempt == self._max_retries
             try:
@@ -287,11 +346,13 @@ def _read_players_cache(path: Path) -> tuple[dict[str, dict[str, Any]], str] | N
         return None
     if not isinstance(payload, dict) or not isinstance(payload.get("players"), dict):
         return None
+    if payload.get("version") != PLAYERS_CACHE_VERSION:
+        return None  # written by an older PLAYER_FIELDS; refetch rather than serve a gap
     return payload["players"], str(payload.get("date"))
 
 
 def _write_players_cache(path: Path, stamp: str, players: dict[str, dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"date": stamp, "players": players}))
+    tmp.write_text(json.dumps({"version": PLAYERS_CACHE_VERSION, "date": stamp, "players": players}))
     os.replace(tmp, path)

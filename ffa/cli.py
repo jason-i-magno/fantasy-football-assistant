@@ -40,6 +40,10 @@ from .draft.session import (
     resolve_draft_id,
 )
 from .draft.shortlist import context_block
+from .leagues import UnknownLeague, directory, resolve as resolve_league
+from .lineup import ui as lineup_ui
+from .lineup.advice import NoRosterError
+from .lineup.source import LineupUnavailable, load_advice
 from .sleeper import SleeperClient, SleeperError, SleeperRateLimited
 from .waivers import ui as waivers_ui
 from .waivers.status import UnsupportedWaivers, build_report, select_statuses
@@ -48,6 +52,8 @@ from .web import (
     DEFAULT_PORT,
     AppState,
     DraftFeed,
+    LeagueDirectory,
+    LineupFeed,
     WaiversFeed,
     make_http_server,
     urls,
@@ -283,11 +289,16 @@ def cmd_replay(args, console: Console) -> int:
 def cmd_waivers(args, console: Console) -> int:
     """Which unrostered players are free agents and which are on waivers, right now."""
     config = _config_for(args)
-    if config.league_id is None:
+    if config.league_id is None and not args.league:
         raise ConfigError(["`ffa waivers` needs a league: pass --league or set SLEEPER_LEAGUE_ID."])
-    report = build_report(
-        SleeperClient(config.cache_dir), config.league_id, datetime.now(timezone.utc), espn.week_kickoffs
-    )
+    client = SleeperClient(config.cache_dir)
+    try:
+        league_id = resolve_league(client, config, args.league)
+    except UnknownLeague as exc:
+        _close(client)
+        console.print(f"[yellow]{exc}")
+        return EXIT_ERROR
+    report = build_report(client, league_id, datetime.now(timezone.utc), espn.week_kickoffs)
     shown = select_statuses(
         report.statuses,
         positions=args.pos or (),
@@ -302,6 +313,41 @@ def cmd_waivers(args, console: Console) -> int:
     else:
         console.print(waivers_ui.header(report))
         console.print(waivers_ui.table(shown, report.now))
+    return EXIT_OK
+
+
+# -- lineup command -----------------------------------------------------------------
+
+
+def cmd_lineup(args, console: Console) -> int:
+    """What to change about the lineup for the week you can still change."""
+    config = _config_for(args)
+    if config.league_id is None and not args.league:
+        raise ConfigError(["`ffa lineup` needs a league: pass --league or set SLEEPER_LEAGUE_ID."])
+    client = SleeperClient(config.cache_dir)
+    try:
+        league_id = resolve_league(client, config, args.league)
+    except UnknownLeague as exc:
+        _close(client)
+        console.print(f"[yellow]{exc}")
+        return EXIT_ERROR
+    try:
+        advice, sources = load_advice(
+            client,
+            league_id=league_id,
+            username=config.sleeper_username,
+            now=datetime.now(timezone.utc),
+            max_adds=args.adds,
+        )
+    except (LineupUnavailable, NoRosterError) as exc:
+        console.print(f"[yellow]{exc}")
+        return EXIT_ERROR
+    finally:
+        _close(client)
+    if args.json:
+        print(json.dumps(lineup_ui.advice_json(advice, sources), indent=2))
+    else:
+        console.print(lineup_ui.render(advice, sources))
     return EXIT_OK
 
 
@@ -331,6 +377,8 @@ def cmd_serve(args, console: Console) -> int:
             exclusions=lambda: _exclusions(args, config),
         ),
         waivers=WaiversFeed(config),
+        lineup=LineupFeed(config),
+        leagues=LeagueDirectory(config),
         token=token,
     )
     try:
@@ -361,13 +409,23 @@ def cmd_serve(args, console: Console) -> int:
 # -- shared plumbing -----------------------------------------------------------------
 
 
+def _close(client) -> None:
+    """Close a client if it can be; the test fakes stand in for one and cannot."""
+    close = getattr(client, "close", None)
+    if callable(close):
+        close()
+
+
 def _config_for(args) -> Config:
     """Load config, letting --user stand in for SLEEPER_USERNAME and --league for SLEEPER_LEAGUE_ID.
 
     One checkout, two managers: each runs their own `watch` against the same draft.
     """
+    # A numeric --league stands in for SLEEPER_LEAGUE_ID here; a name cannot, because
+    # resolving one needs a client. `resolve_league` does that, so a name is left alone and
+    # the configured default keeps the config valid until it is resolved.
     league = getattr(args, "league", None)
-    environ = {**os.environ, "SLEEPER_LEAGUE_ID": league} if league else None
+    environ = {**os.environ, "SLEEPER_LEAGUE_ID": league} if league and league.isdigit() else None
     config = load_config(environ, env_file=args.env_file)
     user = getattr(args, "user", None)
     return replace(config, sleeper_username=user) if user else config
@@ -569,7 +627,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
     waivers = tools.add_parser("waivers", parents=[common],
                                help="which unrostered players are free agents and which are on waivers")
-    waivers.add_argument("--league", help="Sleeper league ID, overriding SLEEPER_LEAGUE_ID")
+    waivers.add_argument("--league", help="Sleeper league ID, or the name of one listed in SLEEPER_LEAGUE_IDS. Defaults to SLEEPER_LEAGUE_ID.")
     waivers.add_argument("--pos", action="append", metavar="POS", help="only these positions (repeatable)")
     waivers.add_argument("--player", action="append", metavar="NAME",
                          help="look players up by name, rostered or not (repeatable)")
@@ -577,6 +635,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                          help="rows to show when not looking players up (default %(default)s)")
     waivers.add_argument("--json", action="store_true", help="print JSON instead of a table")
     waivers.set_defaults(func=cmd_waivers)
+
+    lineup = tools.add_parser("lineup", parents=[common],
+                              help="what to change about your lineup this week, and who to add")
+    lineup.add_argument("--league", help="Sleeper league ID, or the name of one listed in SLEEPER_LEAGUE_IDS. Defaults to SLEEPER_LEAGUE_ID.")
+    lineup.add_argument("--user", help=user_help)
+    lineup.add_argument("--adds", type=int, default=None, metavar="N",
+                        help="how many waiver adds to rank (default 6)")
+    lineup.add_argument("--json", action="store_true", help="print JSON instead of tables")
+    lineup.set_defaults(func=cmd_lineup)
 
     serve = tools.add_parser("serve", parents=[common],
                              help="run both tools as a web app you can open on your phone")

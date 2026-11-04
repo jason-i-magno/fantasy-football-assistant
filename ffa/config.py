@@ -51,7 +51,7 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class Config:
     sleeper_username: str
-    league_id: str | None
+    league_id: str | None  # the default league, used when nothing names another
     draft_id: str | None
     anthropic_api_key: str | None
     model: str
@@ -60,6 +60,9 @@ class Config:
     research_budget: int
     cache_dir: Path = DEFAULT_CACHE_DIR
     web_token: str | None = None  # when set, `ffa serve` requires it on every request
+    # Every league to offer, default first. Managers are usually in more than one, and the
+    # tools that take `--league` should not need a 19-digit id typed into a phone.
+    league_ids: tuple[str, ...] = ()
 
     def require_anthropic_key(self) -> str:
         if not self.anthropic_api_key:
@@ -130,11 +133,19 @@ def load_config(
 
     league_id = get("SLEEPER_LEAGUE_ID")
     draft_id = get("DRAFT_ID")
+    extra = [part for part in re.split(r"[,\s]+", get("SLEEPER_LEAGUE_IDS") or "") if part]
+    if league_id is None and extra:
+        league_id = extra[0]  # a list on its own supplies the default
     if league_id is None and draft_id is None:
         problems.append("Set SLEEPER_LEAGUE_ID, or DRAFT_ID for a mock draft.")
     for name, value in (("SLEEPER_LEAGUE_ID", league_id), ("DRAFT_ID", draft_id)):
         if value is not None and not _SLEEPER_ID.match(value):
             problems.append(f"{name} must be the numeric Sleeper ID, got {value!r}.")
+    for value in extra:
+        if not _SLEEPER_ID.match(value):
+            problems.append(f"SLEEPER_LEAGUE_IDS must be numeric Sleeper IDs, got {value!r}.")
+    # Default first, then the rest in the order given, without repeats.
+    league_ids = tuple(dict.fromkeys([i for i in (league_id, *extra) if i is not None]))
 
     def number(name, kind, default, minimum, maximum=None):
         raw = get(name)
@@ -170,4 +181,5 @@ def load_config(
         research_concurrency=concurrency,
         research_budget=budget,
         web_token=get("FFA_WEB_TOKEN"),
+        league_ids=league_ids,
     )

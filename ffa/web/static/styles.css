@@ -95,6 +95,10 @@ main { padding: var(--pad); display: flex; flex-direction: column; gap: var(--pa
 .panel { display: flex; flex-direction: column; gap: var(--pad); }
 
 .hidden { display: none !important; }
+/* An author `display` rule outranks the user agent's `[hidden] { display: none }`, so a
+   flex or grid element with the hidden attribute stays visible. `show()` sets that
+   attribute, so make it mean what it says. */
+[hidden] { display: none !important; }
 
 .card {
   background: var(--surface);
@@ -303,3 +307,39 @@ details summary { font-size: 13px; color: var(--muted); cursor: pointer; margin:
   :root { --pad: 18px; }
   .slot { width: 76px; }
 }
+
+/* -- lineup tab --------------------------------------------------------------------- */
+
+/* Grid, not flex. These rows must keep the projection pinned right while the explanation
+   underneath spans the full width, and a wrapping flex row cannot do both: it either
+   pushes the points onto their own line or drops the whole player under his slot label. */
+.lrow { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: baseline;
+        padding: 7px 0; border-bottom: 1px solid var(--border); }
+.lrow:last-child { border-bottom: 0; }
+.lrow.seat { grid-template-columns: 52px 1fr auto; }
+.lrow.cand { grid-template-columns: auto 1fr; }
+.lmain { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.lrow .name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.lwhy { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+.proj { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+.proj.zero { color: var(--muted); font-weight: 400; }
+.gain { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--green); }
+
+.tag.locked { color: var(--muted); }
+.tag.warn { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 50%, var(--border)); }
+.tag.good { color: var(--green); border-color: color-mix(in srgb, var(--green) 50%, var(--border)); }
+.tag.out { color: var(--red); border-color: color-mix(in srgb, var(--red) 50%, var(--border)); }
+.tag.swapto { color: var(--accent); border-color: var(--accent); font-weight: 700; }
+
+.notice.good { color: var(--green); }
+.wline.dim { color: var(--muted); }
+
+/* The swap list answers the question the tab exists to ask, so it reads larger. */
+#lineup-moves-card .lrow.swap .name { font-weight: 700; }
+#lineup-moves-card .lrow.swap .gain { font-size: 16px; }
+
+/* The league bar sits in the header, because the lineup and waiver tabs are always looking
+   at the same league and a control that appears twice is a control that can disagree. */
+.chips.leagues { padding: 0 var(--pad) 8px; }
+.chips.leagues .chip { font-size: 13px; padding: 6px 12px; }
+.chips.leagues .chip.off { opacity: 0.5; text-decoration: line-through; }
