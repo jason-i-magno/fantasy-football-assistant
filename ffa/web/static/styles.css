@@ -340,6 +340,33 @@ details summary { font-size: 13px; color: var(--muted); cursor: pointer; margin:
 
 /* The league bar sits in the header, because the lineup and waiver tabs are always looking
    at the same league and a control that appears twice is a control that can disagree. */
+/* The team picker. Ten or twelve names wrap over two or three rows on a phone, which is
+   better than a <select> nobody can scan. These do not stretch like the position chips:
+   a name is a label, and a row of them reads better left-packed than justified. */
+.chips.teams { padding: 0 var(--pad) 8px; }
+.chips.teams .chip { flex: 0 1 auto; font-size: 13px; padding: 6px 12px; min-height: 34px; }
+
+/* The card is the summary when it is closed, so the padding belongs to one of them, not
+   both: with each paying full padding the collapsed bench was half a screen of nothing. */
+#league-bench-card { padding: 0; }
+#league-bench-card summary {
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0;
+  padding: var(--pad);
+  list-style: none;
+}
+#league-bench-card summary::-webkit-details-marker { display: none; }
+#league-bench-card summary::after { content: " \25be"; }
+#league-bench-card details[open] summary::after { content: " \25b4"; }
+#league-bench-card .body { padding: 0 var(--pad) var(--pad); }
+.wline.warn-text { color: var(--amber); }
+
 .chips.leagues { padding: 0 var(--pad) 8px; }
 .chips.leagues .chip { font-size: 13px; padding: 6px 12px; }
 .chips.leagues .chip.off { opacity: 0.5; text-decoration: line-through; }

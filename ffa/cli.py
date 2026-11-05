@@ -332,7 +332,7 @@ def cmd_lineup(args, console: Console) -> int:
         console.print(f"[yellow]{exc}")
         return EXIT_ERROR
     try:
-        advice, sources = load_advice(
+        advice, view, sources = load_advice(
             client,
             league_id=league_id,
             username=config.sleeper_username,
@@ -345,7 +345,11 @@ def cmd_lineup(args, console: Console) -> int:
     finally:
         _close(client)
     if args.json:
-        print(json.dumps(lineup_ui.advice_json(advice, sources), indent=2))
+        payload = lineup_ui.advice_json(advice, sources)
+        payload["teams"] = lineup_ui.league_json(view)
+        print(json.dumps(payload, indent=2))
+    elif args.teams:
+        console.print(lineup_ui.league_render(view))
     else:
         console.print(lineup_ui.render(advice, sources))
     return EXIT_OK
@@ -642,6 +646,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     lineup.add_argument("--user", help=user_help)
     lineup.add_argument("--adds", type=int, default=None, metavar="N",
                         help="how many waiver adds to rank (default 6)")
+    lineup.add_argument("--teams", action="store_true",
+                        help="every manager's lineup as set, instead of advice on your own")
     lineup.add_argument("--json", action="store_true", help="print JSON instead of tables")
     lineup.set_defaults(func=cmd_lineup)
 

@@ -433,13 +433,23 @@ def _advice_loader(calls):
     """A loader that builds real advice from the hand-made roster in test_lineup."""
     from test_lineup import SETTLED_BENCH, SETTLED_STARTERS, roster_world
     from ffa.lineup.advice import build_advice
+    from ffa.lineup.league import build_league_view
     from ffa.lineup.source import LineupSources
 
     def load(client, **kwargs):
         calls.append(kwargs)
         world = roster_world(SETTLED_STARTERS, SETTLED_BENCH,
                              free_agents=[("fa_te", "TE", 12.0, 12.0)])
-        return build_advice(**world), LineupSources(sleeper=True, espn=True)
+        advice = build_advice(**world)
+        view = build_league_view(
+            league=world["league"], rosters=world["rosters"],
+            users=[{"user_id": "u1", "display_name": "me",
+                    "metadata": {"team_name": "My Team"}}],
+            matchups=[], projections=world["projections"], players=world["players"],
+            week=world["week"], kickoffs=world["kickoffs"], now=world["now"],
+            my_roster_id=advice.roster_id,
+        )
+        return advice, view, LineupSources(sleeper=True, espn=True)
 
     return load
 
@@ -460,6 +470,12 @@ def test_lineup_payload_carries_the_whole_screen(recording):
     # Every number the phone draws is already computed: no arithmetic left in the browser.
     first = body["lineup"][0]["player"]
     assert {"points", "keep", "reasons", "on_bye", "disputed"} <= set(first)
+
+    # And every other manager rides along on the same build, scored the same way.
+    team = body["teams"][0]
+    assert team["name"] == "My Team" and team["mine"] is True
+    assert [seat["slot"] for seat in team["lineup"]] == [seat["slot"] for seat in body["lineup"]]
+    assert {"points", "rest", "playoff", "on_bye"} <= set(team["lineup"][0]["player"])
 
 
 def test_one_build_serves_every_screen(recording):

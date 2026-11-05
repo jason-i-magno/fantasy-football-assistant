@@ -211,6 +211,13 @@ any week still to come, where the alternative is calling him worthless.
 It costs almost nothing: one ESPN request already carries every remaining week, so both
 windows come out of one response, and only Sleeper is asked per week.
 
+**Everyone else's lineup, scored the same way.** The League tab (and `ffa lineup --teams`)
+shows every manager's lineup as he has it set, opening on your week's opponent, with the
+same per-game figures your own card carries — the same projections re-scored in your
+league's settings, so the numbers are comparable across rosters. It also says what each
+manager has left on his bench, and flags an empty starting slot or a starter projected to
+score nothing. No advice is offered for a roster you cannot change.
+
 On a full roster every add names its drop, chosen on this week's lineup first and then, among
 drops this week cannot tell apart, on what the player is worth from here. Judged on one week
 alone, every starter on a bye projects zero and looks free to drop, which is how you trade a

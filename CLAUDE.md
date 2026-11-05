@@ -13,6 +13,7 @@ uv run ffa draft doctor                          # live: validate .env, resolve 
 uv run ffa waivers --league ID --player NAME     # live: free agent or on waivers, and until when
 uv run ffa lineup                                # live: start/sit and waiver calls for the open week
 uv run ffa lineup --league NAME                  # another configured league, by name
+uv run ffa lineup --teams                        # live: every manager's lineup as set
 uv run ffa serve --replay tests/fixtures/replay_mock_12team.jsonl   # offline smoke test of the web app
 uv run ffa serve                                 # live: the web app, on every interface
 ```
@@ -43,6 +44,8 @@ those as a web app for a phone on the same network).
 - `ffa/` top level: code shared across tools — `sleeper.py` (API client), `espn.py` (NFL
   kickoff times, which Sleeper doesn't publish), `config.py`, `models.py`.
 - `ffa/draft/`, `ffa/waivers/` and `ffa/lineup/`: each tool's logic and rendering.
+  `lineup/league.py` is every *other* manager's roster, scored by the same
+  `advice.player_line` so a rival's card cannot drift from your own.
 - `ffa/scoring.py`, `ffa/projections.py`, `ffa/espn_fantasy.py`, `ffa/roster.py`: the
   projection layer, shared because more than one tool needs points and slot rules.
 - `ffa/leagues.py`: the configured leagues (`SLEEPER_LEAGUE_IDS`) and name lookup, so
@@ -142,6 +145,11 @@ to get wrong, in the order they bite:
 - **`role_change` is measured over the window, not over one week.** A hard matchup is not a
   demotion, and a player on a bye projects zero -- which made the one check that can see a
   changed role blind in precisely the week the stale row was the only number on the card.
+- **Another manager's card advises nothing.** `league.py` solves every roster's best
+  lineup, because "he has left eleven points on his bench" is the most useful thing to know
+  about an opponent on a Sunday, but it suggests no swap, add or drop for a roster you
+  cannot change. It rides on the same build as your own advice: one extra cached request
+  (the league's user list) and no second fetch of anything expensive.
 - **Byes come from the kickoff schedule.** Both feeds publish a row for a team on bye
   (Sleeper's empty, ESPN's with `appliedTotal` 0), so "no projection" finds nothing. A
   player with no NFL team at all is a different thing and must not be called a bye.
@@ -151,7 +159,9 @@ to get wrong, in the order they bite:
 `ffa serve` is a WSGI app with no framework and no new dependency: `ffa/web/app.py` routes,
 `state.py` holds the shared feeds, `payload.py` turns a `DraftView` into JSON, and
 `static/` is the whole UI (three files, vanilla JS, no build step — they ship inside the
-package, like `draft/prompts/research.md`). Three tabs: Lineup (the default), Waivers, Draft.
+package, like `draft/prompts/research.md`). Four tabs: Lineup (the default), League,
+Waivers, Draft. Lineup and League are drawn from one `/api/lineup` response, so opening the
+second costs nothing and cannot show a number the first disagrees with.
 
 - Nothing fantasy-related lives in the browser. `payload.py` renders the same `DraftView`
   `ui.py` draws, so a fix to the pipeline reaches both surfaces at once. If the UI needs a

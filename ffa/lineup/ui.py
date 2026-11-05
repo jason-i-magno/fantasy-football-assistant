@@ -15,6 +15,7 @@ from rich.text import Text
 
 from ..waivers.status import FREE_AGENT, WAIVERS
 from .advice import AddCandidate, LineupAdvice, PlayerLine
+from .league import LeagueView, TeamCard
 from .source import LineupSources
 
 
@@ -171,6 +172,93 @@ def render(advice: LineupAdvice, sources: LineupSources) -> RenderableType:
     if not advice.adds and not advice.watch:
         parts.append(Text("Nothing unrostered would improve this lineup.", style="dim"))
     return Group(*parts)
+
+
+# -- other managers ---------------------------------------------------------------------
+
+
+def team_table(card: TeamCard) -> Table:
+    """One manager's lineup as set, with the same three numbers your own card carries."""
+    title = card.name + (" (you)" if card.is_mine else " -- your opponent" if card.is_opponent else "")
+    grid = Table(show_edge=False, pad_edge=False, title=title, title_justify="left")
+    grid.add_column("Slot")
+    grid.add_column("Player")
+    grid.add_column("Pos")
+    grid.add_column("Proj", justify="right")
+    grid.add_column("Rest of season", justify="right")
+    grid.add_column("Playoffs", justify="right")
+    grid.add_column("Why", style="dim")
+    for seat in card.seats:
+        if seat.line is None:
+            grid.add_row(seat.slot, Text("(empty)", style="yellow"), "", "", "", "", "")
+            continue
+        grid.add_row(seat.slot, seat.line.player.name, seat.line.player.position,
+                     _points(seat.line.points), _per_game(seat.line.rest),
+                     _per_game(seat.line.playoff), "; ".join(seat.line.reasons))
+    for line in card.bench:
+        grid.add_row(Text("BN", style="dim"), Text(line.player.name, style="dim"),
+                     line.player.position, _points(line.points), _per_game(line.rest),
+                     _per_game(line.playoff), "; ".join(line.reasons))
+    return grid
+
+
+def team_header(card: TeamCard) -> Text:
+    bits = [f"{card.total:.1f} pts as set"]
+    if card.left_on_bench >= 0.1:
+        bits.append(f"{card.left_on_bench:.1f} left on his bench")
+    bits.extend(card.notes)
+    return Text("  ".join(bits), style="dim")
+
+
+def league_render(view: LeagueView) -> RenderableType:
+    """Every team in the league, yours first and your opponent next."""
+    parts: list[RenderableType] = [
+        Text.assemble((view.league_name, "bold"), f" · week {view.week} · every lineup as set"),
+        Text(),
+    ]
+    for card in view.teams:
+        parts += [team_table(card), team_header(card), Text()]
+    return Group(*parts)
+
+
+def _team_line_json(line: PlayerLine | None) -> dict[str, Any] | None:
+    """A slimmer row than `_line_json`: another manager's card shows no advice, so it
+    needs no spread, no source list and no drop floor."""
+    if line is None:
+        return None
+    projection = line.projection
+    return {
+        "player_id": line.player_id,
+        "name": line.player.name,
+        "position": line.player.position,
+        "team": line.player.team,
+        "points": round(line.points, 2),
+        "rest": None if line.rest is None else round(line.rest, 2),
+        "playoff": None if line.playoff is None else round(line.playoff, 2),
+        "locked": line.locked,
+        "reasons": list(line.reasons),
+        "on_bye": bool(projection is not None and projection.on_bye),
+    }
+
+
+def league_json(view: LeagueView) -> list[dict[str, Any]]:
+    return [
+        {
+            "roster_id": card.roster_id,
+            "name": card.name,
+            "manager": card.manager,
+            "mine": card.is_mine,
+            "opponent": card.is_opponent,
+            "total": round(card.total, 2),
+            "best": round(card.best, 2),
+            "left_on_bench": round(card.left_on_bench, 2),
+            "notes": list(card.notes),
+            "lineup": [{"slot": seat.slot, "player": _team_line_json(seat.line)}
+                       for seat in card.seats],
+            "bench": [_team_line_json(line) for line in card.bench],
+        }
+        for card in view.teams
+    ]
 
 
 def _line_json(line: PlayerLine) -> dict[str, Any]:

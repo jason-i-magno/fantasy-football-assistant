@@ -144,8 +144,10 @@ def _leagues(state: AppState, query, start_response):
 
 
 def _lineup(state: AppState, query, start_response):
-    advice, sources = state.lineup.advice(_one(query, "league"))
-    return _json(start_response, {"ok": True, **lineup_ui.advice_json(advice, sources)})
+    advice, view, sources = state.lineup.advice(_one(query, "league"))
+    return _json(start_response,
+                 {"ok": True, **lineup_ui.advice_json(advice, sources),
+                  "teams": lineup_ui.league_json(view)})
 
 
 ROUTES = {
