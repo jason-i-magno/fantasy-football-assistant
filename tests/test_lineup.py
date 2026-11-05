@@ -335,6 +335,27 @@ def test_a_player_the_weekly_feed_has_no_row_for_keeps_his_season_floor():
     assert watch["no_rows"].line.keep == 16.0
 
 
+def test_a_starter_carries_the_same_two_horizons_as_the_bench():
+    """A starter is a keep-or-trade decision too: the week he is strong in is not always
+    the week the league is decided in, and the card said nothing about either for him."""
+    from ffa.lineup.source import LineupSources
+    from ffa.lineup.ui import advice_json
+
+    starters = [(pid, pos, pts, season) for pid, pos, pts, season in SETTLED_STARTERS]
+    starters[0] = ("qb", "QB", 19.0, 19.0, "SF",
+                   {"projection": {"rest_per_game": 21.0, "playoff_per_game": 23.0}})
+    advice = build_advice(**roster_world(starters, SETTLED_BENCH))
+
+    line = advice.line_of("qb")
+    assert line.starting and line.rest == 21.0 and line.playoff == 23.0
+
+    lineup = _rendered(advice).split("Bench")[0]
+    assert "Rest of season" in lineup and "21.0/g" in lineup and "23.0/g" in lineup
+
+    seat = advice_json(advice, LineupSources(sleeper=True, espn=False))["lineup"][0]
+    assert seat["player"]["rest"] == 21.0 and seat["player"]["playoff"] == 23.0
+
+
 def test_the_watchlist_ranks_on_the_fresh_rate_not_the_stale_row():
     """Two free agents the preseason rows rank backwards: one has taken over a role and
     one has lost it, and only the weekly feed knows."""

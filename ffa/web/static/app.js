@@ -706,6 +706,7 @@ function seatRow(seat) {
   }
   const swapTo = seat.swap_to ? el("span", "tag swapto", `→ ${seat.swap_to.name}`) : null;
   row.append(nameBlock(seat.player, swapTo));
+  row.querySelector(".lmain").append(...horizonTags(seat.player));
   row.append(pointsCell(seat.player.points));
   why(row, seat.player);
   return row;

@@ -79,13 +79,17 @@ def lineup_table(advice: LineupAdvice) -> Table:
     grid.add_column("Player")
     grid.add_column("Pos")
     grid.add_column("Proj", justify="right")
+    # The same two horizons the bench carries. A starter is a keep-or-trade decision too,
+    # and the week he is strong in is not always the week the league is decided in.
+    grid.add_column("Rest of season", justify="right")
+    grid.add_column("Playoffs", justify="right")
     grid.add_column("Change", style="yellow")
     grid.add_column("Why", style="dim")
     changes = {swap.out.player_id: swap for swap in advice.swaps if swap.out is not None}
     for seat in advice.current.seats:
         line = advice.line_of(seat.player_id)
         if line is None:
-            grid.add_row(seat.slot, Text("(empty)", style="dim"), "", "", "", "")
+            grid.add_row(seat.slot, Text("(empty)", style="dim"), "", "", "", "", "", "")
             continue
         # Only a change to who starts is a change; the solver moving a player between two
         # slots he is both eligible for scores identically and is not worth a word.
@@ -93,6 +97,7 @@ def lineup_table(advice: LineupAdvice) -> Table:
         change = f"→ {swap.into.player.name}" if swap is not None else ""
         grid.add_row(
             seat.slot, line.player.name, line.player.position, _points(line.points),
+            _per_game(line.rest), _per_game(line.playoff),
             change, "; ".join(line.reasons),
         )
     return grid
