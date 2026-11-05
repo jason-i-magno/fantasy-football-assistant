@@ -373,10 +373,10 @@ def test_the_figure_shown_is_the_fresh_one_not_the_preseason_row():
     """Against live data a back's preseason row had him in a committee at 9.5/g while the
     same provider's weekly rows had him leading a backfield at 14.5/g. The card showed the
     9.5 and called it rest of season."""
-    bench = SETTLED_BENCH + [("warren", "RB", 0.0, 9.5, "PIT",
+    bench = SETTLED_BENCH + [("lead_back", "RB", 0.0, 9.5, "PIT",
                               {"projection": {"rest_per_game": 14.5, "on_bye": True}})]
     advice = build_advice(**roster_world(SETTLED_STARTERS, bench))
-    line = advice.line_of("warren")
+    line = advice.line_of("lead_back")
     assert line.rest == 14.5
     assert line.keep == 14.5  # and what a drop costs follows the fresh rate, not the row
     assert "14.5/g" in _rendered(advice)
