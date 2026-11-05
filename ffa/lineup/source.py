@@ -19,7 +19,7 @@ import httpx
 from ..espn import week_kickoffs
 from ..espn_fantasy import ESPNFantasyError, ESPNPlayer, fetch_weeks
 from ..models import Player
-from ..projections import Projection, build, playoff_weeks, window_per_game
+from ..projections import LAST_WEEK, Projection, build, playoff_weeks, window_per_game
 from ..sleeper import SleeperClient
 from ..waivers.status import LAST_REGULAR_WEEK, build_report
 from .advice import LineupAdvice, build_advice, target_week
@@ -42,6 +42,7 @@ class LineupSources:
     sleeper: bool = False
     espn: bool = False
     espn_note: str | None = None
+    rest_weeks: tuple[int, ...] = ()  # the window behind the per-game rest-of-season number
     playoff_weeks: tuple[int, ...] = ()  # the window behind the per-game playoff number
 
 
@@ -89,38 +90,45 @@ def load_advice(
     sleeper_week = client.projections_week(str(season), week)
     sleeper_season = client.projections_season(str(season))
 
-    # The fantasy playoffs are a separate question from the rest of the season: a player can
-    # be worth a point a week in one window and nothing in the other, because the schedule
-    # is different. Only weeks still to come count.
-    window = tuple(w for w in playoff_weeks(league.get("settings") or {}) if w >= week)
-    sources = LineupSources(sleeper=bool(sleeper_week), playoff_weeks=window)
+    # Two windows, both built only from weeks still to be played. The fantasy playoffs are
+    # a separate question from the rest of the season -- a player can be worth a point a
+    # week in one and nothing in the other, because the schedule is different -- and
+    # neither of them is Sleeper's season row, which was written in August.
+    settings = league.get("settings") or {}
+    window = tuple(w for w in playoff_weeks(settings) if w >= week)
+    rest = tuple(range(week, _final_week(settings) + 1))
+    sources = LineupSources(sleeper=bool(sleeper_week), rest_weeks=rest, playoff_weeks=window)
 
     espn_weeks: dict[int, list[ESPNPlayer]] = {}
-    # One ESPN request carries every remaining week, so the playoff weeks are free here.
+    # One ESPN request carries every remaining week, so both windows are free here.
     fetch_espn = espn_for or (lambda s, w: fetch_weeks(s, w, http=http))
     try:
-        espn_weeks = fetch_espn(season, (week, *window))
+        espn_weeks = fetch_espn(season, rest or (week,))
         sources = LineupSources(sleeper=sources.sleeper, espn=bool(espn_weeks.get(week)),
-                                playoff_weeks=window)
+                                rest_weeks=rest, playoff_weeks=window)
     except ESPNFantasyError as exc:
         # A second opinion is an improvement, not a dependency. Losing it costs the spread
         # check and the role-change gap, so say so rather than silently halving the inputs.
         log.warning("ESPN projections unavailable: %s", exc)
         sources = LineupSources(sleeper=sources.sleeper, espn=False, espn_note=str(exc),
-                                playoff_weeks=window)
+                                rest_weeks=rest, playoff_weeks=window)
     espn_rows = espn_weeks.get(week, [])
 
-    # Sleeper is asked per week, so the playoff weeks cost one request each; the result is
-    # cached for the run and the whole report is cached for minutes, so it is paid rarely.
-    playoff: dict[str, float] = {}
-    if window:
-        playoff = window_per_game(
+    # Sleeper is asked per week, so each week in the window costs a request; they are cached
+    # for the run and the whole report is cached for minutes, so it is paid rarely. Fetched
+    # once and sliced: the playoff weeks are a subset of the weeks still to be played.
+    sleeper_by_week = {w: client.projections_week(str(season), w) for w in rest}
+    per_game = {
+        name: window_per_game(
             players=players,
             scoring=scoring,
-            weeks=window,
-            sleeper_weeks={w: client.projections_week(str(season), w) for w in window},
+            weeks=weeks,
+            sleeper_weeks={w: sleeper_by_week.get(w, ()) for w in weeks},
             espn_weeks=espn_weeks,
         )
+        for name, weeks in (("rest", rest), ("playoff", window))
+        if weeks
+    }
 
     projections: Mapping[str, Projection] = build(
         players=players,
@@ -129,7 +137,8 @@ def load_advice(
         sleeper_season=sleeper_season,
         espn_week=espn_rows,
         playing_teams=frozenset(kickoffs),
-        playoff=playoff,
+        rest=per_game.get("rest", {}),
+        playoff=per_game.get("playoff", {}),
     )
     if not projections:
         raise LineupUnavailable(
@@ -148,6 +157,16 @@ def load_advice(
         current_starters=starters, **kwargs,
     )
     return advice, sources
+
+
+def _final_week(settings: Mapping) -> int:
+    """The last week this league plays, so "rest of season" stops where the league does.
+
+    Week 18 exists in the NFL and in almost no fantasy league: counting it would value a
+    player on the strength of a week nobody in the league will ever start him.
+    """
+    weeks = playoff_weeks(settings)
+    return max(weeks) if weeks else LAST_WEEK
 
 
 def _starters_for_week(

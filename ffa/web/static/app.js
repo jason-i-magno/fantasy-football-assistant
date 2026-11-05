@@ -662,14 +662,24 @@ function nameBlock(player, extra) {
   return main;
 }
 
-// Season pace and the playoff window answer different questions, so they are two tags
-// rather than one number — and they belong on anyone worth claiming, not just the bench.
+// The rest of the season and the playoff window answer different questions, so they are
+// two tags rather than one number — and they belong on anyone worth claiming, not just
+// the bench. Both come from the payload already blended; `keep` is the drop floor and is
+// deliberately not drawn, because a stale preseason number beside two fresh ones reads as
+// though it were one of them.
 function horizonTags(player) {
-  const tags = [el("span", "tag", `${player.keep.toFixed(1)}/g pace`)];
+  const tags = [];
+  if (player.rest !== null && player.rest !== undefined) {
+    tags.push(el("span", "tag", `${player.rest.toFixed(1)}/g rest`));
+  }
   if (player.playoff !== null && player.playoff !== undefined) {
     tags.push(el("span", "tag playoff", `${player.playoff.toFixed(1)}/g playoffs`));
   }
   return tags;
+}
+
+function perGame(value, suffix) {
+  return value === null || value === undefined ? "" : `${value.toFixed(1)}/g ${suffix}`;
 }
 
 function why(row, player) {
@@ -720,12 +730,16 @@ function renderLineup(data) {
   summary.append(el("div", "wline dim",
     `Projections: Sleeper${sources.espn ? " blended with ESPN" : " only"}, ` +
     `re-scored with this league's settings.` + (sources.espn_note ? ` ESPN: ${sources.espn_note}` : "")));
-  const weeks = (data.sources || {}).playoff_weeks || [];
-  if (weeks.length) {
-    const span = weeks.length === 1 ? `week ${weeks[0]}` : `weeks ${weeks[0]}-${weeks[weeks.length - 1]}`;
+  const span = (weeks) => weeks.length === 1
+    ? `week ${weeks[0]}` : `weeks ${weeks[0]}-${weeks[weeks.length - 1]}`;
+  const spans = [["Rest of season", sources.rest_weeks || []],
+                 ["playoffs", sources.playoff_weeks || []]]
+    .filter(([, weeks]) => weeks.length)
+    .map(([label, weeks]) => `${label} is ${span(weeks)}`);
+  if (spans.length) {
     summary.append(el("div", "wline dim",
-      `Playoff figures are a fresh projection of ${span}; season pace is the preseason ` +
-      `total over 18 games and moves slowly.`));
+      `${spans.join(", ")} — both projected game by game and re-scored here, not ` +
+      `Sleeper's preseason season row. That row is still the floor under a drop.`));
   }
   (data.notes || []).forEach((note) => summary.append(el("div", "wline dim", note)));
 
@@ -783,10 +797,10 @@ function renderCandidates(card, candidates) {
     row.querySelector(".lmain").append(...horizonTags(candidate.player));
     if (candidate.drop) {
       const drop = candidate.drop;
-      const playoff = drop.playoff === null || drop.playoff === undefined
-        ? "" : `, ${drop.playoff.toFixed(1)}/g in the playoffs`;
+      const worth = [perGame(drop.rest, "rest of season"), perGame(drop.playoff, "in the playoffs")]
+        .filter(Boolean).join(", ");
       row.append(el("div", "lwhy",
-        `Drop ${drop.name} (${drop.keep.toFixed(1)}/g season pace${playoff})`));
+        `Drop ${drop.name}${worth ? ` (${worth})` : ""}`));
     }
     if (candidate.player.reasons && candidate.player.reasons.length) {
       row.append(el("div", "lwhy", candidate.player.reasons.join("; ")));

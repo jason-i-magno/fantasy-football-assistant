@@ -456,7 +456,7 @@ def test_lineup_payload_carries_the_whole_screen(recording):
     ]
     assert body["settled"] is True and body["swaps"] == []
     assert body["sources"] == {"sleeper": True, "espn": True, "espn_note": None,
-                               "playoff_weeks": []}
+                               "rest_weeks": [], "playoff_weeks": []}
     # Every number the phone draws is already computed: no arithmetic left in the browser.
     first = body["lineup"][0]["player"]
     assert {"points", "keep", "reasons", "on_bye", "disputed"} <= set(first)

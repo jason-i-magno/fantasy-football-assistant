@@ -119,13 +119,20 @@ to get wrong, in the order they bite:
   swaps worth nothing on a week whose real gain is zero.
 - **Drops are judged on the rest of the season.** On this week alone every bye-week starter
   projects zero and looks free to drop.
-- **Two horizons, never conflated.** `keep` is Sleeper's preseason season total over 18
-  games (slow to move, which is why it is the floor for a drop), while `playoff_per_game` is
-  a fresh blend of the league's actual playoff weeks, from `projections.playoff_weeks` on
-  `playoff_week_start` and the bracket size. They are labelled "season pace" and "playoffs"
-  on both surfaces precisely so nobody reads one as the other. One ESPN request carries
-  every remaining week, so `espn_fantasy.fetch_weeks` reads the playoff weeks out of the
-  response already fetched; only Sleeper costs a request per week.
+- **Never show the season row as a rest-of-season number.** Sleeper's season row is a
+  preseason projection that is never revised: against live data one back's row had him at
+  172 carries for the year while the same provider's weekly rows had him at 14.5 a game,
+  nine points of season row versus fifteen of fresh rate. Both displayed figures are
+  therefore weekly blends over weeks still to be played -- `rest_per_game` over week-now to
+  the league's final week, `playoff_per_game` over `projections.playoff_weeks` -- and are
+  labelled "rest of season" and "playoffs" so nobody reads one as the other. The season row
+  survives in exactly one place, `advice._keep_value`, as the floor under a drop, where
+  being slow to move is the right property. One ESPN request carries every remaining week,
+  so both windows come out of one response; only Sleeper costs a request per week, and the
+  rest window is fetched once and sliced for the playoff one.
+- **`role_change` is measured over the window, not over one week.** A hard matchup is not a
+  demotion, and a player on a bye projects zero -- which made the one check that can see a
+  changed role blind in precisely the week the stale row was the only number on the card.
 - **Byes come from the kickoff schedule.** Both feeds publish a row for a team on bye
   (Sleeper's empty, ESPN's with `appliedTotal` 0), so "no projection" finds nothing. A
   player with no NFL team at all is a different thing and must not be called a bye.
@@ -147,7 +154,7 @@ package, like `draft/prompts/research.md`). Three tabs: Lineup (the default), Wa
 - `WaiversFeed` and `LineupFeed` build each report with a *fresh* `SleeperClient`: that
   client caches rosters, transactions and the NFL state for its own lifetime, which is
   right for a one-shot command and wrong for a server that stays up for days. `LineupFeed`
-  caches for ten minutes and builds synchronously: a cold build measured about 3.5s, most
+  caches for ten minutes and builds synchronously: a cold build measured about 4s, most
   of it ESPN, which is a better trade than a worker thread and a progress protocol.
 - The league picker is one control in the header, shared by the lineup and waivers tabs,
   because two controls for one choice is one of them being wrong. It is hidden on the draft
