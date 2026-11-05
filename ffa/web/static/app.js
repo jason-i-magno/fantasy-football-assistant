@@ -662,6 +662,16 @@ function nameBlock(player, extra) {
   return main;
 }
 
+// Season pace and the playoff window answer different questions, so they are two tags
+// rather than one number — and they belong on anyone worth claiming, not just the bench.
+function horizonTags(player) {
+  const tags = [el("span", "tag", `${player.keep.toFixed(1)}/g pace`)];
+  if (player.playoff !== null && player.playoff !== undefined) {
+    tags.push(el("span", "tag playoff", `${player.playoff.toFixed(1)}/g playoffs`));
+  }
+  return tags;
+}
+
 function why(row, player) {
   if (player.reasons && player.reasons.length) {
     row.append(el("div", "lwhy", player.reasons.join("; ")));
@@ -710,6 +720,13 @@ function renderLineup(data) {
   summary.append(el("div", "wline dim",
     `Projections: Sleeper${sources.espn ? " blended with ESPN" : " only"}, ` +
     `re-scored with this league's settings.` + (sources.espn_note ? ` ESPN: ${sources.espn_note}` : "")));
+  const weeks = (data.sources || {}).playoff_weeks || [];
+  if (weeks.length) {
+    const span = weeks.length === 1 ? `week ${weeks[0]}` : `weeks ${weeks[0]}-${weeks[weeks.length - 1]}`;
+    summary.append(el("div", "wline dim",
+      `Playoff figures are a fresh projection of ${span}; season pace is the preseason ` +
+      `total over 18 games and moves slowly.`));
+  }
   (data.notes || []).forEach((note) => summary.append(el("div", "wline dim", note)));
 
   // The moves, which is the whole point of the tab.
@@ -739,7 +756,8 @@ function renderLineup(data) {
   show(benchCard, (data.bench || []).length > 0);
   const bench = clear(benchCard.querySelector(".body"));
   (data.bench || []).forEach((player) => {
-    const row = playerRow(player, el("span", "tag", `${player.keep.toFixed(1)}/g rest`));
+    const row = playerRow(player);
+    row.querySelector(".lmain").append(...horizonTags(player));
     bench.append(row);
   });
 
@@ -761,8 +779,14 @@ function renderCandidates(card, candidates) {
         ? el("span", "tag warn", `waivers → ${fmtTime(candidate.clears_at)}`)
         : null;
     row.append(nameBlock(candidate.player, status));
+    // A claim is a roster decision, so both horizons belong on it, not just this week's gain.
+    row.querySelector(".lmain").append(...horizonTags(candidate.player));
     if (candidate.drop) {
-      row.append(el("div", "lwhy", `Drop ${candidate.drop.name} (${candidate.drop.keep.toFixed(1)}/g rest of season)`));
+      const drop = candidate.drop;
+      const playoff = drop.playoff === null || drop.playoff === undefined
+        ? "" : `, ${drop.playoff.toFixed(1)}/g in the playoffs`;
+      row.append(el("div", "lwhy",
+        `Drop ${drop.name} (${drop.keep.toFixed(1)}/g season pace${playoff})`));
     }
     if (candidate.player.reasons && candidate.player.reasons.length) {
       row.append(el("div", "lwhy", candidate.player.reasons.join("; ")));

@@ -343,3 +343,4 @@ details summary { font-size: 13px; color: var(--muted); cursor: pointer; margin:
 .chips.leagues { padding: 0 var(--pad) 8px; }
 .chips.leagues .chip { font-size: 13px; padding: 6px 12px; }
 .chips.leagues .chip.off { opacity: 0.5; text-decoration: line-through; }
+.tag.playoff { color: var(--magenta); border-color: color-mix(in srgb, var(--magenta) 50%, var(--border)); }

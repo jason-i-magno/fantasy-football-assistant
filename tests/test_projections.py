@@ -13,6 +13,7 @@ from ffa import projections as proj
 from ffa.espn_fantasy import (
     ESPNPlayer,
     PLAYER_FEED_URL,
+    fetch_weeks,
     parse_player,
     translate_stats,
     week_projections,
@@ -241,3 +242,88 @@ def test_a_fresh_week_far_above_the_season_pace_is_a_role_change():
     assert one.season_per_game == pytest.approx(1.3)
     assert one.role_change == pytest.approx(11.3 - 1.3)  # ESPN's weekly, not the blend
     assert one.role_changed
+
+
+# -- the playoff window -----------------------------------------------------------------
+
+
+def test_the_playoff_window_comes_from_the_league_not_a_guess():
+    six = {"playoff_week_start": 15, "playoff_teams": 6, "playoff_round_type": 0}
+    assert proj.playoff_weeks(six) == (15, 16, 17)  # bye for the top two, three rounds
+    assert proj.playoff_weeks({**six, "playoff_teams": 4}) == (15, 16)
+    assert proj.playoff_weeks({**six, "playoff_teams": 8, "playoff_round_type": 1}) == (15, 16, 17, 18)
+    assert proj.playoff_weeks({**six, "playoff_round_type": 2}) == (15, 16, 17, 18)
+
+
+def test_the_playoff_window_stops_at_the_end_of_the_season():
+    assert proj.playoff_weeks({"playoff_week_start": 17, "playoff_teams": 8}) == (17, 18)
+
+
+def test_a_league_with_no_playoff_settings_has_no_window():
+    assert proj.playoff_weeks({}) == ()
+    assert proj.playoff_weeks({"playoff_week_start": "nonsense"}) == ()
+
+
+def test_the_playoff_number_is_a_mean_over_the_window():
+    players = {"1": player("1", "WR", "Wide One")}
+    per_game = proj.window_per_game(
+        players=players, scoring=PPR, weeks=[15, 16, 17],
+        sleeper_weeks={
+            15: [sleeper_row("1", {"rec": 10.0})],
+            16: [sleeper_row("1", {"rec": 20.0})],
+            17: [sleeper_row("1", {"rec": 30.0})],
+        },
+    )
+    assert per_game["1"] == pytest.approx(20.0)
+
+
+def test_a_week_nobody_projected_is_not_counted_as_a_zero():
+    """Averaging in a missing week would punish a player for a gap in the feed."""
+    players = {"1": player("1", "WR", "Wide One")}
+    per_game = proj.window_per_game(
+        players=players, scoring=PPR, weeks=[15, 16, 17],
+        sleeper_weeks={15: [sleeper_row("1", {"rec": 10.0})], 16: [], 17: []},
+    )
+    assert per_game["1"] == pytest.approx(10.0)
+
+
+def test_the_playoff_number_blends_both_sources_like_any_other_week():
+    players = {"1": player("1", "WR", "Wide One")}
+    per_game = proj.window_per_game(
+        players=players, scoring=PPR, weeks=[15],
+        sleeper_weeks={15: [sleeper_row("1", {"rec": 10.0})]},
+        espn_weeks={15: [espn_row("5", "Wide One", "WR", "SF", {"rec": 20.0})]},
+    )
+    assert per_game["1"] == pytest.approx(15.0)
+
+
+def test_the_playoff_figure_rides_along_on_the_projection():
+    players = {"1": player("1", "WR", "Wide One")}
+    built = proj.build(players=players, scoring=PPR,
+                       sleeper_week=[sleeper_row("1", {"rec": 5.0})],
+                       playoff={"1": 12.5})
+    assert built["1"].playoff_per_game == 12.5
+    assert built["1"].points == 5.0  # and it does not disturb this week
+
+
+def test_several_weeks_are_read_out_of_one_espn_response():
+    """The payload already carries every remaining week, so this must not refetch."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"players": [{
+            "id": 1,
+            "player": {"fullName": "A Back", "defaultPositionId": 2, "proTeamId": 25, "stats": [
+                {"statSourceId": 1, "statSplitTypeId": 1, "scoringPeriodId": wk,
+                 "seasonId": 2026, "appliedTotal": wk, "stats": {"24": wk * 10}}
+                for wk in (9, 15, 16, 17)
+            ]},
+        }]})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        weeks = fetch_weeks(2026, [9, 15, 16, 17], http=client, pages=1)
+    assert len(calls) == 1
+    assert {w: rows[0].stats["rush_yd"] for w, rows in weeks.items()} == {
+        9: 90.0, 15: 150.0, 16: 160.0, 17: 170.0
+    }
