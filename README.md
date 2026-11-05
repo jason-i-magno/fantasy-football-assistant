@@ -205,15 +205,21 @@ different questions:
 Neither is Sleeper's *season* projection. That row is written before the season and never
 revised, so a player who has since taken over a backfield still reads as the committee back
 he was in August — one real case was nine points a game on the season row against fifteen on
-the same provider's weekly rows. The season row is used in one place only, as the floor under
-a drop, where being slow to move is the right property.
+the same provider's weekly rows. It is a last resort only, for a player no feed projects in
+any week still to come, where the alternative is calling him worthless.
 
 It costs almost nothing: one ESPN request already carries every remaining week, so both
 windows come out of one response, and only Sleeper is asked per week.
 
-On a full roster every add names its drop, chosen on that slow season floor rather than on
-the week in front of you. Judged on one week alone, every starter on a bye projects zero and
-looks free to drop, which is how you trade a season-long starter for a one-week streamer.
+On a full roster every add names its drop, chosen on this week's lineup first and then, among
+drops this week cannot tell apart, on what the player is worth from here. Judged on one week
+alone, every starter on a bye projects zero and looks free to drop, which is how you trade a
+season-long starter for a one-week streamer.
+
+"From here" counts a fantasy playoff week as two regular-season weeks, so the weighting
+tightens on its own as the season runs out — half the weight on the playoffs in week 9, six
+sevenths of it by week 14 — and the same number ranks the watchlist, because a drop and an
+add are the same call pointed in opposite directions.
 Whether you can actually make the claim comes from the same rules as `ffa waivers`: free
 agent now, or on waivers until a stated time.
 

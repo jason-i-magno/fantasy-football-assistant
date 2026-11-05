@@ -20,9 +20,9 @@ Why two sources, when blending costs a second fetch and a fuzzy join:
   a role. `Projection.role_change` is that gap, and ranking by it is what surfaces the week's
   real waiver adds instead of the names everyone already owns.
   So the number *shown* as rest-of-season is `rest_per_game`, a fresh weekly blend over every
-  week still to play, never the season row. The season row survives in exactly one place,
-  as the floor under a drop (`advice._keep_value`), because being slow to move is the right
-  property there and the wrong one everywhere else.
+  week still to play, never the season row. The season row is now a last resort only, used
+  when no feed projects a player in any week still to be played (`advice.Horizon.later`),
+  where the alternative is scoring him zero and making him the obvious man to drop.
 - **The house effects differ.** ESPN runs a couple of points per week hotter than Sleeper
   across the board. That is a scale difference, not staleness, and the two still rank
   players the same way, so the mean of the pair is a better point estimate than either and

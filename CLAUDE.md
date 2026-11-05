@@ -117,8 +117,16 @@ to get wrong, in the order they bite:
 - **A diff of starting *sets*, not of seats.** A lineup scores the same however its eligible
   players are spread across eligible slots, so a seat-wise comparison reports confident
   swaps worth nothing on a week whose real gain is zero.
-- **Drops are judged on the rest of the season.** On this week alone every bye-week starter
-  projects zero and looks free to drop.
+- **Drops are judged on what a player is worth from here, never on this week.** On this
+  week alone every bye-week starter projects zero and looks free to drop. `Horizon` is that
+  judgement and is used on both sides of a move -- the floor under a drop and the ranking
+  behind "worth owning" -- because a drop and an add are the same call pointed in opposite
+  directions. A playoff week counts `PLAYOFF_WEEK_WEIGHT` regular-season weeks, which with
+  the weight at 2.0 puts half the weight on the playoffs in week 9 and six sevenths of it by
+  week 14, tightening on its own as the rest-of-season window shrinks. This week is excluded
+  deliberately: a drop is chosen on this week's lineup *first* and the floor only breaks the
+  ties, so the players it decides between are the ones not starting, whose points this week
+  are points they will not score for you.
 - **Never show the season row as a rest-of-season number.** Sleeper's season row is a
   preseason projection that is never revised: against live data one back's row had him at
   172 carries for the year while the same provider's weekly rows had him at 14.5 a game,
@@ -126,8 +134,9 @@ to get wrong, in the order they bite:
   therefore weekly blends over weeks still to be played -- `rest_per_game` over week-now to
   the league's final week, `playoff_per_game` over `projections.playoff_weeks` -- and are
   labelled "rest of season" and "playoffs" so nobody reads one as the other. The season row
-  survives in exactly one place, `advice._keep_value`, as the floor under a drop, where
-  being slow to move is the right property. One ESPN request carries every remaining week,
+  is a last resort only, for a player no feed projects in any week still to be played, where
+  the alternative is scoring him zero and naming him the drop. One ESPN request carries
+  every remaining week,
   so both windows come out of one response; only Sleeper costs a request per week, and the
   rest window is fetched once and sliced for the playoff one.
 - **`role_change` is measured over the window, not over one week.** A hard matchup is not a
