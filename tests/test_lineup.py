@@ -41,8 +41,9 @@ def player(player_id, position, name=None, team="SF", **kwargs):
 
 
 def projection(player_id, position, points, *, season=None, team="SF", **kwargs):
+    kwargs.setdefault("sources", ("sleeper",))  # overridable: provenance is testable too
     return Projection(player_id=player_id, position=position, team=team, points=points,
-                      sleeper=points, season_per_game=season, sources=("sleeper",), **kwargs)
+                      sleeper=points, season_per_game=season, **kwargs)
 
 
 def roster_world(starters, bench, *, free_agents=(), now=NOW, kickoffs=None):
@@ -423,6 +424,50 @@ def test_the_watchlist_ranks_on_the_fresh_rate_not_the_stale_row():
     advice = build_advice(**roster_world(SETTLED_STARTERS, SETTLED_BENCH,
                                          free_agents=free_agents))
     assert [c.line.player_id for c in advice.watch] == ["riser"]
+
+
+def test_a_figure_only_one_feed_stands_behind_says_so():
+    """A backup one feed has written up and the other has not looks, as a number, exactly
+    like one they agree on -- and these figures now decide drops and rank the watchlist."""
+    bench = SETTLED_BENCH + [("one_feed", "RB", 8.0, 8.0, "SF", {"projection": {
+        "rest_per_game": 16.0, "rest_sources": ("espn",), "sources": ("sleeper", "espn")}})]
+    advice = build_advice(**roster_world(SETTLED_STARTERS, bench))
+    assert "espn only from here" in advice.line_of("one_feed").reasons
+
+
+def test_it_is_not_said_twice_when_this_week_already_says_it():
+    bench = SETTLED_BENCH + [("one_feed", "RB", 8.0, 8.0, "SF", {"projection": {
+        "rest_per_game": 16.0, "rest_sources": ("espn",), "sources": ("espn",)}})]
+    reasons = build_advice(**roster_world(SETTLED_STARTERS, bench)).line_of("one_feed").reasons
+    assert "espn only" in reasons and "espn only from here" not in reasons
+
+
+def test_a_player_on_a_bye_still_gets_the_label():
+    """The bye-week card shows nothing but forward figures, so it needs the label most --
+    and `_effective` returns early on a bye, which is why this is computed outside it."""
+    bench = SETTLED_BENCH + [("one_feed", "RB", 0.0, 8.0, "PIT", {"projection": {
+        "rest_per_game": 16.0, "rest_sources": ("espn",), "on_bye": True}})]
+    reasons = build_advice(**roster_world(SETTLED_STARTERS, bench)).line_of("one_feed").reasons
+    assert reasons == ("on bye", "espn only from here")
+
+
+def test_a_waiver_candidate_carries_the_label_too():
+    """A claim on a player one feed invented is the riskiest kind, so the add list is the
+    last place the label should be missing -- it was, until candidates were built by the
+    same function as every other row."""
+    free_agents = [("one_feed", "RB", 14.0, 14.0, "SF", {"projection": {
+        "rest_per_game": 16.0, "rest_sources": ("espn",), "sources": ("sleeper", "espn")}})]
+    advice = build_advice(**roster_world(SETTLED_STARTERS, SETTLED_BENCH,
+                                         free_agents=free_agents))
+    candidate = next(c for c in advice.adds if c.line.player_id == "one_feed")
+    assert "espn only from here" in candidate.line.reasons
+
+
+def test_a_kicker_is_not_nagged_about_coming_from_one_source():
+    """Kickers are Sleeper-only by design; saying so every week is noise, not a warning."""
+    bench = SETTLED_BENCH + [("k2", "K", 8.0, 8.0, "SF", {"projection": {
+        "rest_per_game": 8.0, "rest_sources": ("sleeper",), "sources": ("sleeper",)}})]
+    assert build_advice(**roster_world(SETTLED_STARTERS, bench)).line_of("k2").reasons == ()
 
 
 # -- every other manager ----------------------------------------------------------------

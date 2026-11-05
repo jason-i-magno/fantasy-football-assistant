@@ -251,7 +251,7 @@ def test_the_role_change_is_measured_against_the_weeks_still_to_play():
         players=players, scoring=PPR,
         sleeper_week=[sleeper_row("1", {"rush_yd": 40.0})],  # a quiet week
         sleeper_season=[sleeper_row("1", {"rush_yd": 234.0, "gp": 18.0})],
-        rest={"1": 14.5},
+        rest={"1": proj.WindowValue(14.5, ("sleeper",))},
     )
     assert built["1"].role_change == pytest.approx(14.5 - 1.3)
     assert built["1"].role_changed
@@ -267,7 +267,7 @@ def test_a_role_change_is_still_visible_while_the_player_is_on_a_bye():
         sleeper_week=[sleeper_row("1", {"rush_yd": 40.0})],
         sleeper_season=[sleeper_row("1", {"rush_yd": 1710.0, "gp": 18.0})],  # 9.5 pts/g
         playing_teams=frozenset({"SF"}),  # PIT is not playing
-        rest={"1": 14.5},
+        rest={"1": proj.WindowValue(14.5, ("sleeper", "espn"))},
     )
     one = built["1"]
     assert one.on_bye and one.points == 0.0
@@ -287,8 +287,11 @@ def test_the_rest_of_season_figure_rides_along_on_the_projection():
     players = {"1": player("1", "WR", "Wide One")}
     built = proj.build(players=players, scoring=PPR,
                        sleeper_week=[sleeper_row("1", {"rec": 5.0})],
-                       rest={"1": 11.0}, playoff={"1": 12.5})
+                       rest={"1": proj.WindowValue(11.0, ("espn",))},
+                       playoff={"1": proj.WindowValue(12.5, ("espn",))})
     assert built["1"].rest_per_game == 11.0 and built["1"].playoff_per_game == 12.5
+    # One feed behind the figures a roster move is judged on, and the card has to say so.
+    assert built["1"].rest_sources == ("espn",) and built["1"].forward_single_source
     assert built["1"].points == 5.0  # and neither disturbs this week
 
 
@@ -322,7 +325,8 @@ def test_the_playoff_number_is_a_mean_over_the_window():
             17: [sleeper_row("1", {"rec": 30.0})],
         },
     )
-    assert per_game["1"] == pytest.approx(20.0)
+    assert per_game["1"].points == pytest.approx(20.0)
+    assert per_game["1"].sources == ("sleeper",)
 
 
 def test_a_week_nobody_projected_is_not_counted_as_a_zero():
@@ -332,7 +336,7 @@ def test_a_week_nobody_projected_is_not_counted_as_a_zero():
         players=players, scoring=PPR, weeks=[15, 16, 17],
         sleeper_weeks={15: [sleeper_row("1", {"rec": 10.0})], 16: [], 17: []},
     )
-    assert per_game["1"] == pytest.approx(10.0)
+    assert per_game["1"].points == pytest.approx(10.0)
 
 
 def test_the_playoff_number_blends_both_sources_like_any_other_week():
@@ -342,14 +346,15 @@ def test_the_playoff_number_blends_both_sources_like_any_other_week():
         sleeper_weeks={15: [sleeper_row("1", {"rec": 10.0})]},
         espn_weeks={15: [espn_row("5", "Wide One", "WR", "SF", {"rec": 20.0})]},
     )
-    assert per_game["1"] == pytest.approx(15.0)
+    assert per_game["1"].points == pytest.approx(15.0)
+    assert per_game["1"].sources == ("espn", "sleeper")  # both, so nothing to warn about
 
 
 def test_the_playoff_figure_rides_along_on_the_projection():
     players = {"1": player("1", "WR", "Wide One")}
     built = proj.build(players=players, scoring=PPR,
                        sleeper_week=[sleeper_row("1", {"rec": 5.0})],
-                       playoff={"1": 12.5})
+                       playoff={"1": proj.WindowValue(12.5, ("sleeper",))})
     assert built["1"].playoff_per_game == 12.5
     assert built["1"].points == 5.0  # and it does not disturb this week
 

@@ -145,6 +145,17 @@ to get wrong, in the order they bite:
 - **`role_change` is measured over the window, not over one week.** A hard matchup is not a
   demotion, and a player on a bye projects zero -- which made the one check that can see a
   changed role blind in precisely the week the stale row was the only number on the card.
+- **Say when one feed alone is behind a number.** `window_per_game` carries each window's
+  sources out with its mean, because a figure both feeds built and one ESPN built alone are
+  identical as numbers -- and the second is the shape of a backup one feed has written up
+  and the other has not. Found live: an unrostered rookie quarterback reached the watchlist
+  on ESPN's word alone, with nothing on the card saying so. `Projection.forward_single_source`
+  is that check and is separate from `single_source`, which is about this Sunday; the note is
+  added in `player_line`, outside `_effective`, because `_effective` returns early on a bye
+  and a bye-week card is all forward figures.
+- **One builder for every row.** `advice.player_line` builds your lineup, your bench, every
+  waiver candidate and every other manager's roster. Candidates used to be built inline and
+  silently missed the label above; a second constructor is a second set of rules.
 - **Another manager's card advises nothing.** `league.py` solves every roster's best
   lineup, because "he has left eleven points on his bench" is the most useful thing to know
   about an opponent on a Sunday, but it suggests no swap, add or drop for a roster you

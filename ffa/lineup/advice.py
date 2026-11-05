@@ -18,7 +18,7 @@ Two rules from hard experience shape the whole thing:
 
 import logging
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from ..models import Player, to_int
@@ -239,6 +239,9 @@ def player_line(
     """
     playing = bool(player.team and player.team in kickoffs)
     points, reasons = _effective(player, projection, playing=playing)
+    note = _forward_note(player, projection, reasons)
+    if note is not None:
+        reasons = reasons + (note,)
     kickoff = kickoffs.get(player.team or "")
     locked = kickoff is not None and kickoff <= now
     return PlayerLine(
@@ -251,6 +254,24 @@ def player_line(
         rest=projection.rest_per_game if projection is not None else None,
         playoff=projection.playoff_per_game if projection is not None else None,
     )
+
+
+def _forward_note(
+    player: Player, projection: Projection | None, reasons: Sequence[str]
+) -> str | None:
+    """Say so when one feed alone stands behind what this player is worth from here.
+
+    `_effective` already says it about this Sunday, and returns early for a bye or an
+    injury, so this is computed outside it: a player on a bye is precisely the one whose
+    card shows nothing but forward figures, and he is the one who most needs the label.
+    Said once -- when this week already carries the same note, repeating it is noise.
+    """
+    if projection is None or player.position in SLEEPER_ONLY_POSITIONS:
+        return None  # kickers come from one source by design
+    if not projection.forward_single_source:
+        return None
+    source = projection.rest_sources[0]
+    return None if f"{source} only" in reasons else f"{source} only from here"
 
 
 def _effective(
@@ -528,10 +549,11 @@ def _candidates(
         projection = projections.get(player_id)
         if player is None or projection is None:
             continue
-        playing = bool(player.team and player.team in kickoffs)
-        week_points, reasons = _effective(player, projection, playing=playing)
-        keep = horizon.keep(projection, week_points)
-        value = week_points if basis == "week" else horizon.later(projection)
+        # Through the same builder as every other row, so a claim cannot be described
+        # differently from the same player once he is on your bench.
+        line = player_line(player, projection, kickoffs=kickoffs, now=report.now,
+                           horizon=horizon)
+        value = line.points if basis == "week" else horizon.later(projection)
         if value <= 0:
             continue
         points[player_id] = value
@@ -545,13 +567,10 @@ def _candidates(
         if gain < MIN_ADD_GAIN:
             continue
         if projection.role_changed:
-            reasons = reasons + (f"{projection.role_change:+.1f} vs his preseason row",)
-        out.append(AddCandidate(
-            line=PlayerLine(player=player, projection=projection, points=week_points,
-                            reasons=reasons, keep=keep, rest=projection.rest_per_game,
-                            playoff=projection.playoff_per_game),
-            gain=gain, drop=drop, status=statuses.get(player_id),
-        ))
+            line = replace(line, reasons=line.reasons
+                           + (f"{projection.role_change:+.1f} vs his preseason row",))
+        out.append(AddCandidate(line=line, gain=gain, drop=drop,
+                                status=statuses.get(player_id)))
     out.sort(key=lambda c: -c.gain)
 
     # A bye at one position would otherwise fill the list with interchangeable streamers:
