@@ -34,6 +34,7 @@ from ..draft.session import (
 )
 from ..leagues import LeagueRef, directory
 from ..lineup.advice import LineupAdvice, NoRosterError
+from ..lineup.league import LeagueView
 from ..lineup.source import LineupSources, LineupUnavailable, load_advice
 from ..sleeper import SleeperClient, SleeperError, SleeperRateLimited
 from ..waivers.status import UnsupportedWaivers, WaiverReport, build_report
@@ -300,7 +301,7 @@ class WaiversFeed:
 @dataclass
 class _CachedAdvice:
     expires: float
-    built: tuple[LineupAdvice, LineupSources] | None = None
+    built: tuple[LineupAdvice, LeagueView, LineupSources] | None = None
     error: Exception | None = None
 
 
@@ -322,7 +323,7 @@ class LineupFeed:
         config: Config,
         *,
         client_factory: Callable[[], Any] | None = None,
-        loader: Callable[..., tuple[LineupAdvice, LineupSources]] = load_advice,
+        loader: Callable[..., tuple[LineupAdvice, LeagueView, LineupSources]] = load_advice,
         ttl: float = LINEUP_TTL_SECONDS,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         monotonic: Callable[[], float] = time.monotonic,
@@ -346,7 +347,7 @@ class LineupFeed:
             raise FeedUnavailable(f"{league!r} is not a numeric Sleeper league ID.")
         return league
 
-    def advice(self, requested: str | None = None) -> tuple[LineupAdvice, LineupSources]:
+    def advice(self, requested: str | None = None) -> tuple[LineupAdvice, LeagueView, LineupSources]:
         league = self.league_id(requested)
         with self._lock:
             now = self._monotonic()

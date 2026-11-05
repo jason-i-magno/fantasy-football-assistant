@@ -14,6 +14,7 @@
 <header>
   <nav class="tabs" role="tablist">
     <button type="button" class="tab active" data-tab="lineup" role="tab">Lineup</button>
+    <button type="button" class="tab" data-tab="league" role="tab">League</button>
     <button type="button" class="tab" data-tab="waivers" role="tab">Waivers</button>
     <button type="button" class="tab" data-tab="draft" role="tab">Draft</button>
   </nav>
@@ -66,6 +67,30 @@
       league's own settings — so these are points in your league, not generic ones. Every
       number is lineup impact: what a change does to the best lineup you can field, which is
       why a good player behind two better ones is worth nothing.
+    </p>
+  </section>
+
+  <section id="panel-league" class="panel hidden">
+    <div id="league-banner" class="banner hidden"></div>
+
+    <div class="chips teams" id="team-chips" hidden></div>
+
+    <section class="card" id="league-team-card">
+      <div class="skeleton">Reading the league…</div>
+    </section>
+
+    <section class="card" id="league-bench-card" hidden>
+      <details>
+        <summary>Bench <span class="sub" id="league-bench-sub"></span></summary>
+        <div class="body"></div>
+      </details>
+    </section>
+
+    <p class="footnote">
+      Every manager's lineup as he has it set, scored exactly the way your own is — same
+      projections, same two horizons, your league's own settings. No advice is offered for
+      a roster you cannot change; what is worth knowing is what someone has left on his
+      bench, and who he is starting who will not play.
     </p>
   </section>
 

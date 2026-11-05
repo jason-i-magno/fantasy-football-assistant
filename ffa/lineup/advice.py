@@ -224,6 +224,35 @@ class Horizon:
         return later if later > 0.0 else this_week
 
 
+def player_line(
+    player: Player,
+    projection: Projection | None,
+    *,
+    kickoffs: Mapping[str, datetime],
+    now: datetime,
+    horizon: Horizon,
+) -> PlayerLine:
+    """One player as any card shows him: this week, both horizons, and why.
+
+    Shared by the roster being advised and by every other roster in the league, so another
+    manager's page cannot drift into showing a differently-computed number from your own.
+    """
+    playing = bool(player.team and player.team in kickoffs)
+    points, reasons = _effective(player, projection, playing=playing)
+    kickoff = kickoffs.get(player.team or "")
+    locked = kickoff is not None and kickoff <= now
+    return PlayerLine(
+        player=player,
+        projection=projection,
+        points=points,
+        locked=locked,
+        reasons=reasons + (("locked: his game started",) if locked else ()),
+        keep=horizon.keep(projection, points),
+        rest=projection.rest_per_game if projection is not None else None,
+        playoff=projection.playoff_per_game if projection is not None else None,
+    )
+
+
 def _effective(
     player: Player, projection: Projection | None, *, playing: bool
 ) -> tuple[float, tuple[str, ...]]:
@@ -350,18 +379,8 @@ def build_advice(
         player = players.get(player_id)
         if player is None:
             continue
-        projection = projections.get(player_id)
-        playing = bool(player.team and player.team in kickoffs)
-        points, reasons = _effective(player, projection, playing=playing)
-        kickoff = kickoffs.get(player.team or "")
-        locked = kickoff is not None and kickoff <= now
-        lines[player_id] = PlayerLine(
-            player=player, projection=projection, points=points,
-            locked=locked, reasons=reasons + (("locked: his game started",) if locked else ()),
-            keep=horizon.keep(projection, points),
-            rest=projection.rest_per_game if projection is not None else None,
-            playoff=projection.playoff_per_game if projection is not None else None,
-        )
+        lines[player_id] = player_line(player, projections.get(player_id),
+                                       kickoffs=kickoffs, now=now, horizon=horizon)
 
     # Seat the lineup as it stands. Sleeper writes "0" for an empty starting slot.
     seats: list[Seat] = []

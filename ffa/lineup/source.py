@@ -22,7 +22,8 @@ from ..models import Player
 from ..projections import LAST_WEEK, Projection, build, playoff_weeks, window_per_game
 from ..sleeper import SleeperClient
 from ..waivers.status import LAST_REGULAR_WEEK, build_report
-from .advice import LineupAdvice, build_advice, target_week
+from .advice import Horizon, LineupAdvice, build_advice, target_week
+from .league import LeagueView, build_league_view
 
 log = logging.getLogger(__name__)
 
@@ -56,8 +57,13 @@ def load_advice(
     espn_for: Callable[[int, Sequence[int]], dict[int, list[ESPNPlayer]]] | None = None,
     http: httpx.Client | None = None,
     max_adds: int | None = None,
-) -> tuple[LineupAdvice, LineupSources]:
-    """Build this week's advice for `username` in `league_id`."""
+) -> tuple[LineupAdvice, LeagueView, LineupSources]:
+    """Build this week's advice for `username` in `league_id`, and every team's card.
+
+    One build for both: the league view needs the same projections, the same kickoffs and
+    the same week, and the only request it adds is the league's user list. Splitting them
+    would double the expensive half of this function to save a cached call.
+    """
     report = build_report(client, league_id, now, kickoffs_for)
     state = client.nfl_state()
     season = int(state.get("season") or now.year)
@@ -148,7 +154,8 @@ def load_advice(
     user = client.user(username)
     user_id = str(user.get("user_id") or "")
     rosters = client.rosters(league_id)
-    starters = _starters_for_week(client, league_id, week, user_id, rosters)
+    matchups = _matchups(client, league_id, week)
+    starters = _starters_for_week(matchups, user_id, rosters)
 
     kwargs = {} if max_adds is None else {"max_adds": max_adds}
     advice = build_advice(
@@ -156,7 +163,13 @@ def load_advice(
         projections=projections, players=players, week=week, kickoffs=kickoffs, now=now,
         current_starters=starters, rest_weeks=rest, playoff_weeks=window, **kwargs,
     )
-    return advice, sources
+    view = build_league_view(
+        league=league, rosters=rosters, users=client.league_users(league_id),
+        matchups=matchups, projections=projections, players=players, week=week,
+        kickoffs=kickoffs, now=now, my_roster_id=advice.roster_id,
+        horizon=Horizon(rest_weeks=len(rest), playoff_weeks=len(window)),
+    )
+    return advice, view, sources
 
 
 def _final_week(settings: Mapping) -> int:
@@ -169,13 +182,16 @@ def _final_week(settings: Mapping) -> int:
     return max(weeks) if weeks else LAST_WEEK
 
 
-def _starters_for_week(
-    client: SleeperClient,
-    league_id: str,
-    week: int,
-    user_id: str,
-    rosters,
-) -> list[str] | None:
+def _matchups(client: SleeperClient, league_id: str, week: int) -> list[dict]:
+    """The week's matchups, or nothing. Sleeper has not always built them yet."""
+    try:
+        return client.matchups(league_id, week) or []
+    except Exception as exc:  # a missing matchup is normal before Sleeper builds the week
+        log.debug("No matchups for week %s: %s", week, exc)
+        return []
+
+
+def _starters_for_week(matchups, user_id: str, rosters) -> list[str] | None:
     """The lineup as set for the target week, preferring the week's own matchup.
 
     A roster's `starters` is the lineup for Sleeper's current week, which is not always the
@@ -190,11 +206,6 @@ def _starters_for_week(
             roster_id = roster.get("roster_id")
             break
     if roster_id is None:
-        return None
-    try:
-        matchups = client.matchups(league_id, week)
-    except Exception as exc:  # a missing matchup is normal before Sleeper builds the week
-        log.debug("No matchup for week %s: %s", week, exc)
         return None
     for entry in matchups or ():
         if entry.get("roster_id") == roster_id:

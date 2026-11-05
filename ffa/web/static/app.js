@@ -613,8 +613,9 @@ function chooseLeague(leagueId) {
   store("ffa-league", leagueId);
   lineup.data = null;
   waivers.data = null;
+  state.team = null;  // roster ids are per league; keeping one across a switch picks a stranger
   renderLeagues();
-  if (state.tab === "lineup") loadLineup();
+  if (state.tab === "lineup" || state.tab === "league") loadLineup();
   else if (state.tab === "waivers") loadWaivers();
 }
 
@@ -637,6 +638,7 @@ async function loadLineup() {
     lineup.fetchedAt = Date.now();
     banner($("#lineup-banner"), null);
     renderLineup(data);
+    renderLeague(data);
   } catch (error) {
     lineup.error = error.message;
     banner($("#lineup-banner"), error.message, "error");
@@ -812,10 +814,77 @@ function renderCandidates(card, candidates) {
 
 $("#lineup-refresh").addEventListener("click", () => { lineup.data = null; loadLineup(); });
 
+// -- the league: every other manager, off the same payload ----------------------------
+
+function teamsOf(data) {
+  return (data && data.teams) || [];
+}
+
+function chosenTeam(data) {
+  const teams = teamsOf(data);
+  if (!teams.length) return null;
+  const picked = teams.find((t) => t.roster_id === state.team);
+  // Nobody has picked yet, so open on the matchup: that is the one everybody wants.
+  return picked || teams.find((t) => t.opponent) || teams.find((t) => !t.mine) || teams[0];
+}
+
+function renderLeague(data) {
+  const teams = teamsOf(data);
+  const bar = $("#team-chips");
+  show(bar, teams.length > 1);
+  clear(bar);
+  const team = chosenTeam(data);
+  teams.forEach((entry) => {
+    const suffix = entry.mine ? " (you)" : entry.opponent ? " · this week" : "";
+    const chip = el("button", "chip", entry.name + suffix);
+    chip.type = "button";
+    chip.dataset.roster = String(entry.roster_id);
+    if (team && entry.roster_id === team.roster_id) chip.classList.add("on");
+    bar.append(chip);
+  });
+
+  const card = clear($("#league-team-card"));
+  if (!team) {
+    card.append(el("div", "skeleton", "No other rosters in this league."));
+    show($("#league-bench-card"), false);
+    return;
+  }
+  card.append(el("div", "name", team.name + (team.manager && team.manager !== team.name
+    ? ` · ${team.manager}` : "")));
+  const totals = [`${team.total.toFixed(1)} pts as set`];
+  if (team.left_on_bench >= 0.1) totals.push(`${team.left_on_bench.toFixed(1)} left on his bench`);
+  card.append(el("div", "wline", totals.join(" · ")));
+  (team.notes || []).forEach((note) => card.append(el("div", "wline warn-text", note)));
+  const body = el("div", "body");
+  (team.lineup || []).forEach((seat) => body.append(seatRow(seat)));
+  card.append(body);
+
+  const benchCard = $("#league-bench-card");
+  show(benchCard, (team.bench || []).length > 0);
+  $("#league-bench-sub").textContent = `${(team.bench || []).length} players`;
+  const bench = clear(benchCard.querySelector(".body"));
+  (team.bench || []).forEach((player) => {
+    const row = playerRow(player);
+    row.querySelector(".lmain").append(...horizonTags(player));
+    bench.append(row);
+  });
+}
+
+function chooseTeam(rosterId) {
+  state.team = rosterId;
+  store("ffa-team", String(rosterId));
+  renderLeague(lineup.data);
+}
+
+$("#team-chips").addEventListener("click", (event) => {
+  const chip = event.target.closest(".chip");
+  if (chip) chooseTeam(Number(chip.dataset.roster));
+});
+
 // -- tabs, freshness, visibility ------------------------------------------------------
 
-const TABS = ["lineup", "waivers", "draft"];
-const state = { tab: "lineup" };
+const TABS = ["lineup", "league", "waivers", "draft"];
+const state = { tab: "lineup", team: Number(stored("ffa-team")) || null };
 
 function tickStatus() {
   if (state.tab === "draft") {
@@ -827,7 +896,7 @@ function tickStatus() {
     const suffix = research === "researching" ? " · researching" : research === "ready" ? " · research ready" : "";
     return setStatus(kind, `${draft.data.board.status} · updated ${age}s ago${suffix}`);
   }
-  if (state.tab === "lineup") {
+  if (state.tab === "lineup" || state.tab === "league") {
     if (lineup.error && !lineup.data) return setStatus("down", lineup.error);
     if (!lineup.data) return setStatus("", "working it out…");
     const data = lineup.data;
@@ -852,7 +921,8 @@ function selectTab(name) {
   renderLeagues();
   if (name === "draft") pollDraft();
   else if (name === "waivers") loadWaivers();
-  else if (!lineup.data) loadLineup();
+  else if (!lineup.data) loadLineup();          // one build serves the lineup and the league
+  else if (name === "league") renderLeague(lineup.data);
   tickStatus();
 }
 

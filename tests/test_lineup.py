@@ -425,6 +425,114 @@ def test_the_watchlist_ranks_on_the_fresh_rate_not_the_stale_row():
     assert [c.line.player_id for c in advice.watch] == ["riser"]
 
 
+# -- every other manager ----------------------------------------------------------------
+
+
+def league_world(teams, *, mine=3, matchups=None, users=None):
+    """A whole league from {roster_id: (starters, bench)} tuples, for the league view."""
+    from ffa.lineup.league import build_league_view
+
+    players, projections, rosters = {}, {}, []
+    for roster_id, (starters, bench) in teams.items():
+        owned = []
+        for entry in [*starters, *bench]:
+            pid, position, points, season = entry[0], entry[1], entry[2], entry[3]
+            team = entry[4] if len(entry) > 4 else "SF"
+            players[pid] = player(pid, position, team=team)
+            projections[pid] = projection(pid, position, points, season=season, team=team)
+            owned.append(pid)
+        rosters.append({"roster_id": roster_id, "owner_id": f"u{roster_id}",
+                        "players": owned, "starters": [s[0] for s in starters]})
+    return dict(
+        league=LEAGUE, rosters=rosters,
+        users=users if users is not None else [
+            {"user_id": f"u{r}", "display_name": f"manager {r}"} for r in teams
+        ],
+        matchups=matchups if matchups is not None else [],
+        projections=projections, players=players, week=9, kickoffs=KICKOFFS, now=NOW,
+        my_roster_id=mine,
+    ), build_league_view
+
+
+def test_every_team_is_scored_the_same_way_your_own_is():
+    world, build = league_world({
+        3: (SETTLED_STARTERS, SETTLED_BENCH),
+        4: (SETTLED_STARTERS, []),
+    })
+    view = build(**world)
+    assert [t.roster_id for t in view.teams] == [3, 4]  # yours first
+    mine = view.team(3)
+    assert mine.is_mine and [s.slot for s in mine.seats] == SLOTS
+    assert mine.total == pytest.approx(sum(s[2] for s in SETTLED_STARTERS))
+    assert [l.player_id for l in mine.bench] == ["rb3", "wr4"]
+
+
+def test_the_opponent_comes_second_and_is_marked():
+    world, build = league_world(
+        {3: (SETTLED_STARTERS, []), 4: (SETTLED_STARTERS, []), 5: (SETTLED_STARTERS, [])},
+        matchups=[{"roster_id": 3, "matchup_id": 1}, {"roster_id": 5, "matchup_id": 1},
+                  {"roster_id": 4, "matchup_id": 2}],
+    )
+    view = build(**world)
+    assert [t.roster_id for t in view.teams] == [3, 5, 4]
+    assert view.opponent.roster_id == 5 and not view.team(4).is_opponent
+
+
+def test_a_lone_roster_in_its_matchup_has_no_opponent():
+    """An odd number of teams gives someone a bye, which is not an error."""
+    world, build = league_world({3: (SETTLED_STARTERS, [])},
+                                matchups=[{"roster_id": 3, "matchup_id": 1}])
+    assert build(**world).opponent is None
+
+
+def test_the_matchup_lineup_wins_over_the_roster_one():
+    """A roster's own `starters` is Sleeper's current week, not the week being shown."""
+    world, build = league_world({3: (SETTLED_STARTERS, SETTLED_BENCH)})
+    swapped = [s[0] for s in SETTLED_STARTERS]
+    swapped[1] = "rb3"  # the manager has since benched rb1 for rb3
+    world["matchups"] = [{"roster_id": 3, "starters": swapped,
+                          "players": [s[0] for s in [*SETTLED_STARTERS, *SETTLED_BENCH]]}]
+    view = build(**world)
+    assert view.team(3).seats[1].line.player_id == "rb3"
+    assert "rb1" in {l.player_id for l in view.team(3).bench}
+
+
+def test_what_a_manager_has_left_on_his_bench_is_reported():
+    """The most useful thing to know about an opponent on a Sunday morning."""
+    starters = list(SETTLED_STARTERS)
+    starters[1] = ("rb1", "RB", 2.0, 2.0)  # he is starting the wrong back
+    world, build = league_world({3: ([*starters], [("rb9", "RB", 15.0, 15.0)])})
+    card = build(**world).team(3)
+    assert card.left_on_bench == pytest.approx(13.0)
+
+
+def test_an_empty_slot_and_an_idle_starter_are_called_out():
+    starters = list(SETTLED_STARTERS)
+    starters[0] = ("qb", "QB", 0.0, 19.0, "PIT")  # on bye: PIT has no kickoff
+    world, build = league_world({3: ([*starters], [])})
+    world["matchups"] = [{"roster_id": 3, "starters": [s[0] for s in starters][:-1],
+                          "players": [s[0] for s in starters]}]
+    notes = build(**world).team(3).notes
+    assert "1 empty starting slot" in notes
+    assert "starting 1 player projected to score nothing" in notes
+
+
+def test_a_team_is_named_by_its_manager_when_he_has_not_named_it():
+    world, build = league_world(
+        {3: (SETTLED_STARTERS, []), 4: (SETTLED_STARTERS, [])},
+        users=[{"user_id": "u3", "display_name": "one", "metadata": {"team_name": "The Ones"}},
+               {"user_id": "u4", "display_name": "two"}],
+    )
+    view = build(**world)
+    assert (view.team(3).name, view.team(3).manager) == ("The Ones", "one")
+    assert (view.team(4).name, view.team(4).manager) == ("two", "two")
+
+
+def test_a_roster_whose_owner_has_left_still_has_a_name():
+    world, build = league_world({3: (SETTLED_STARTERS, [])}, users=[])
+    assert build(**world).team(3).name == "Roster 3"
+
+
 # -- more than one league ---------------------------------------------------------------
 
 
