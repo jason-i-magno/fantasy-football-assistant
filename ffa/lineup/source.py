@@ -154,7 +154,7 @@ def load_advice(
     advice = build_advice(
         report=report, league=league, rosters=rosters, user_id=user_id,
         projections=projections, players=players, week=week, kickoffs=kickoffs, now=now,
-        current_starters=starters, **kwargs,
+        current_starters=starters, rest_weeks=rest, playoff_weeks=window, **kwargs,
     )
     return advice, sources
 

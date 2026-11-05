@@ -44,6 +44,10 @@ MIN_ADD_GAIN = 0.1
 # projections inside a tenth of a point are the same number, and "go change your lineup" is
 # the wrong conclusion to draw from one.
 MIN_SWAP_GAIN = 0.1
+# What one fantasy playoff week is worth, counted in regular-season weeks, when valuing a
+# player beyond this Sunday. A roster spot carried into December is carried for the weeks
+# that decide the league; two is the mildest number that says so out loud.
+PLAYOFF_WEEK_WEIGHT = 2.0
 
 
 class NoRosterError(Exception):
@@ -163,32 +167,61 @@ def resolve_roster(rosters: Sequence[Mapping], user_id: str) -> Mapping:
     raise NoRosterError("The configured Sleeper user has no roster in this league.")
 
 
-def _keep_value(projection: Projection | None, this_week: float) -> float:
-    """What dropping a player costs, per week, beyond the week in front of you.
+@dataclass(frozen=True, slots=True)
+class Horizon:
+    """What a player is worth from here, in one definition used on both sides of a move.
 
-    A bye or a one-week injury makes `this_week` zero without making the player worthless,
-    so the season pace is the floor. It is the stale preseason number, which understates a
-    player who has just taken over a role and overstates one who has lost it -- but it
-    errs towards keeping established players, and that is the safe direction for a drop.
-    This is the one place the season row is still used, and deliberately: being slow to
-    move is the right property under a drop and the wrong one everywhere else.
+    A drop and an add are the same judgement pointed in opposite directions, so the floor
+    under a drop and the ranking behind "worth owning" have to be the same number or the
+    tool will drop a player for a weakness it would not have noticed in a claim.
+
+    A playoff week counts `PLAYOFF_WEEK_WEIGHT` regular-season weeks. Because the rest-of-
+    season window shrinks as the season runs out while the playoff window does not, that
+    single rule tightens the weighting on its own and needs no date arithmetic: with the
+    weight at 2.0 and playoffs in weeks 15-17, half the weight sits on them in week 9 and
+    six sevenths of it by week 14.
+
+    It is written against the two means already computed rather than against the weeks
+    themselves. The rest window *contains* the playoff weeks, so counting a playoff week
+    twice is the same as adding one extra, playoff-only copy of that mean to the average:
+    `(R*rest + (w-1)*P*playoff) / (R + (w-1)*P)`.
     """
-    if projection is None:
-        return this_week
-    return max(this_week, projection.season_per_game or 0.0)
 
+    rest_weeks: int = 0
+    playoff_weeks: int = 0
 
-def _rest_value(projection: Projection | None, this_week: float) -> float:
-    """What a player is worth per week over the rest of the season.
+    def later(self, projection: Projection) -> float:
+        """His per-week value from here, with no regard for the week in front of you."""
+        rest, playoff = projection.rest_per_game, projection.playoff_per_game
+        if rest is None:
+            # Nobody is projecting him in any week still to be played. The preseason row is
+            # all that is left, and it beats scoring him zero: zero would make the one
+            # player no feed has an opinion on the obvious man to drop.
+            return projection.season_per_game or 0.0
+        extra = (PLAYOFF_WEEK_WEIGHT - 1.0) * self.playoff_weeks
+        if playoff is None or not self.rest_weeks or extra <= 0:
+            return rest
+        return (self.rest_weeks * rest + extra * playoff) / (self.rest_weeks + extra)
 
-    The fresh blend over every week still to play when there is one, because that is the
-    number that notices a changed role; the stale season floor only when there isn't.
-    """
-    if projection is None:
-        return this_week
-    if projection.rest_per_game is not None:
-        return projection.rest_per_game
-    return _keep_value(projection, this_week)
+    def keep(self, projection: Projection | None, this_week: float) -> float:
+        """What dropping him costs, per week. The floor under every drop.
+
+        The week in front of you is deliberately not part of it. It used to be, as
+        `max(this_week, ...)`, to stop a bye from making a player look worthless back when
+        the alternative was a preseason row that could be absurdly wrong; a forward mean
+        over every remaining week handles a bye on its own. Keeping the max would have
+        blunted the playoff weighting on precisely the players it decides between, because
+        a drop is chosen on this week's lineup first and the floor only breaks the ties --
+        which is to say, among players who are not starting, whose points this week are
+        points they will not score for you.
+
+        This week is the fallback only when nothing at all is known about the weeks after
+        it, where the alternative is scoring him zero and naming him the obvious drop.
+        """
+        if projection is None:
+            return this_week
+        later = self.later(projection)
+        return later if later > 0.0 else this_week
 
 
 def _effective(
@@ -269,9 +302,12 @@ def _drop_choice(
     """The cheapest player to drop, and the lineup total left behind.
 
     Chosen on this week's lineup first, then -- among drops this week cannot tell apart --
-    on the lowest rest-of-season value. That second key is what stops the obvious disaster:
-    judged on one week alone, every starter on a bye projects zero and so looks free to
-    drop, and the tool would cheerfully trade a season-long starter for a one-week streamer.
+    on the lowest value from here (`Horizon.keep`, playoff weeks weighted). That second key
+    is doing most of the work in practice: a bench player's departure leaves this week's
+    lineup untouched, so every bench drop ties and the tie-break decides. It is also what
+    stops the obvious disaster: judged on one week alone, every starter on a bye projects
+    zero and so looks free to drop, and the tool would cheerfully trade a season-long
+    starter for a one-week streamer.
     """
     best: tuple[PlayerLine | None, float] = (None, float("-inf"))
     for line in candidates:
@@ -295,10 +331,13 @@ def build_advice(
     kickoffs: Mapping[str, datetime],
     now: datetime,
     current_starters: Sequence[str] | None = None,
+    rest_weeks: Sequence[int] = (),
+    playoff_weeks: Sequence[int] = (),
     max_adds: int = MAX_ADDS,
 ) -> LineupAdvice:
     """Solve one roster's week. Pure: everything it needs is already fetched."""
     roster = resolve_roster(rosters, user_id)
+    horizon = Horizon(rest_weeks=len(rest_weeks), playoff_weeks=len(playoff_weeks))
     roster_id = to_int(roster.get("roster_id")) or 0
     slots = starting_slots(league.get("roster_positions") or ())
     owned = [str(p) for p in (roster.get("players") or ()) if p]
@@ -319,7 +358,7 @@ def build_advice(
         lines[player_id] = PlayerLine(
             player=player, projection=projection, points=points,
             locked=locked, reasons=reasons + (("locked: his game started",) if locked else ()),
-            keep=_keep_value(projection, points),
+            keep=horizon.keep(projection, points),
             rest=projection.rest_per_game if projection is not None else None,
             playoff=projection.playoff_per_game if projection is not None else None,
         )
@@ -361,18 +400,18 @@ def build_advice(
     shared = dict(
         report=report, statuses=statuses, players=players, projections=projections,
         lines=lines, slots=slots, kickoffs=kickoffs, pinned=pinned,
-        locked_bench=locked_bench,
+        locked_bench=locked_bench, horizon=horizon,
         roster_full=len(owned) >= len(league.get("roster_positions") or ()),
     )
     adds = _candidates(
         values={pid: l.points for pid, l in lines.items()},
-        horizon="week", max_adds=max_adds, **shared,
+        basis="week", max_adds=max_adds, **shared,
     )
     taken = {c.line.player_id for c in adds}
     watch = tuple(
         c for c in _candidates(
-            values={pid: _rest_value(l.projection, l.points) for pid, l in lines.items()},
-            horizon="season", max_adds=max_adds + len(taken), **shared,
+            values={pid: l.keep for pid, l in lines.items()},
+            basis="season", max_adds=max_adds + len(taken), **shared,
         )
         if c.line.player_id not in taken
     )[:MAX_WATCH]
@@ -413,7 +452,8 @@ def _candidates(
     pinned: Mapping[int, str],
     locked_bench: Sequence[str],
     roster_full: bool,
-    horizon: str,
+    horizon: Horizon,
+    basis: str,
     max_adds: int,
 ) -> tuple[AddCandidate, ...]:
     """Unrostered players ranked by what they would add to the optimal lineup.
@@ -455,7 +495,7 @@ def _candidates(
             continue
         if not player.active or not player.can_play:
             continue
-        value = projection.points if horizon == "week" else _rest_value(projection, projection.points)
+        value = projection.points if basis == "week" else horizon.later(projection)
         if value <= 0:
             continue
         # Order the pool by value, nudged up by any role change, so a back who took over a
@@ -471,8 +511,8 @@ def _candidates(
             continue
         playing = bool(player.team and player.team in kickoffs)
         week_points, reasons = _effective(player, projection, playing=playing)
-        keep = _keep_value(projection, week_points)
-        value = week_points if horizon == "week" else _rest_value(projection, week_points)
+        keep = horizon.keep(projection, week_points)
+        value = week_points if basis == "week" else horizon.later(projection)
         if value <= 0:
             continue
         points[player_id] = value

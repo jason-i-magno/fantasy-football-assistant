@@ -14,6 +14,7 @@ from ffa.config import load_config
 from ffa.leagues import UnknownLeague, directory, resolve
 from ffa.lineup.advice import (
     MAX_ADDS_PER_POSITION,
+    Horizon,
     NoRosterError,
     build_advice,
     resolve_roster,
@@ -274,6 +275,62 @@ def test_a_backup_who_would_never_start_is_not_on_the_watchlist():
     assert not any(c.line.player_id == "backup_qb" for c in advice.watch)
 
 
+# -- what a player is worth from here ---------------------------------------------------
+
+
+def test_a_playoff_week_counts_double_in_what_a_drop_costs():
+    p = projection("x", "RB", 0.0, season=4.0, rest_per_game=12.0, playoff_per_game=6.0)
+    nine_weeks = Horizon(rest_weeks=9, playoff_weeks=3)
+    assert nine_weeks.later(p) == pytest.approx((9 * 12.0 + 3 * 6.0) / 12)
+
+
+def test_the_playoff_window_weighs_more_as_the_season_runs_out():
+    """No date arithmetic: the rest window shrinks and the playoff window does not."""
+    p = projection("x", "RB", 0.0, season=4.0, rest_per_game=12.0, playoff_per_game=6.0)
+    september, december = Horizon(13, 3).later(p), Horizon(4, 3).later(p)
+    assert 6.0 < december < september < 12.0
+
+
+def test_with_no_playoff_window_the_value_is_just_the_rest_of_the_season():
+    p = projection("x", "RB", 0.0, season=4.0, rest_per_game=12.0)
+    assert Horizon(9, 3).later(p) == 12.0  # no playoff figure to weigh
+    assert Horizon(9, 0).later(p) == 12.0  # a league with no playoffs configured
+
+
+def test_a_bench_player_is_not_kept_for_points_he_cannot_score():
+    """The floor only breaks ties between players this week's lineup cannot tell apart --
+    players who are not starting. Counting their week-`n` points would blunt the playoff
+    weighting on exactly the drops it exists to decide."""
+    p = projection("x", "RB", 0.0, season=4.0, rest_per_game=5.0, playoff_per_game=5.0)
+    assert Horizon(9, 3).keep(p, this_week=20.0) == 5.0
+
+
+def test_a_player_nothing_is_known_about_keeps_this_week_as_his_floor():
+    """Scoring him zero would make the one player no feed has an opinion on the drop."""
+    p = projection("x", "RB", 0.0, season=None)
+    assert Horizon(9, 3).keep(p, this_week=8.0) == 8.0
+
+
+def test_the_drop_prefers_the_player_who_is_absent_in_december():
+    """Two bench players this week cannot tell apart: equal rest-of-season rates, and one
+    of them is on a bye in the title week. That is the one to let go."""
+    bench = [
+        ("decembers", "RB", 1.0, 9.0, "SF",
+         {"projection": {"rest_per_game": 9.0, "playoff_per_game": 12.0}}),
+        ("septembers", "RB", 1.0, 9.0, "SF",
+         {"projection": {"rest_per_game": 9.0, "playoff_per_game": 2.0}}),
+    ]
+    world = roster_world(SETTLED_STARTERS, bench,
+                         free_agents=[("fa_def", "DEF", 18.0, 18.0)])
+    world["rosters"][0]["players"] += [f"filler{i}"
+                                       for i in range(15 - len(world["rosters"][0]["players"]))]
+    world["rest_weeks"], world["playoff_weeks"] = range(9, 18), (15, 16, 17)
+    advice = build_advice(**world)
+    assert advice.adds
+    drop = advice.adds[0].drop
+    assert drop is not None and drop.player_id == "septembers"
+
+
 # -- what the two surfaces show ---------------------------------------------------------
 
 
@@ -320,7 +377,7 @@ def test_the_figure_shown_is_the_fresh_one_not_the_preseason_row():
     advice = build_advice(**roster_world(SETTLED_STARTERS, bench))
     line = advice.line_of("warren")
     assert line.rest == 14.5
-    assert line.keep == 9.5  # the drop floor is still the slow number, deliberately
+    assert line.keep == 14.5  # and what a drop costs follows the fresh rate, not the row
     assert "14.5/g" in _rendered(advice)
 
 
