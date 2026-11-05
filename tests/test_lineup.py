@@ -274,6 +274,43 @@ def test_a_backup_who_would_never_start_is_not_on_the_watchlist():
     assert not any(c.line.player_id == "backup_qb" for c in advice.watch)
 
 
+# -- what the two surfaces show ---------------------------------------------------------
+
+
+def _rendered(advice):
+    from rich.console import Console
+
+    from ffa.lineup.source import LineupSources
+    from ffa.lineup.ui import render
+
+    console = Console(width=200, no_color=True)
+    with console.capture() as capture:
+        console.print(render(advice, LineupSources(sleeper=True, espn=False)))
+    return capture.get()
+
+
+def test_a_waiver_candidate_shows_both_horizons_and_not_just_this_week():
+    """A claim is kept for weeks, so "what is he worth later" has to be on the row too.
+
+    The playoff figure arrived first and the season pace was left on the bench table only,
+    which read as though a candidate had no rest-of-season value at all.
+    """
+    from ffa.lineup.source import LineupSources
+    from ffa.lineup.ui import advice_json
+
+    free_agents = [("fa_te", "TE", 15.0, 17.0)]
+    advice = build_advice(**roster_world(SETTLED_STARTERS, SETTLED_BENCH,
+                                         free_agents=free_agents))
+    assert [c.line.player_id for c in advice.adds] == ["fa_te"]
+    assert advice.adds[0].line.keep == 17.0  # his pace, not the 15.0 he is worth on Sunday
+
+    adds = _rendered(advice).split("Add this week")[1]
+    assert "Season pace" in adds and "17.0/g" in adds
+
+    payload = advice_json(advice, LineupSources(sleeper=True, espn=False))
+    assert payload["adds"][0]["player"]["keep"] == 17.0
+
+
 # -- more than one league ---------------------------------------------------------------
 
 

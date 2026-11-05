@@ -662,6 +662,16 @@ function nameBlock(player, extra) {
   return main;
 }
 
+// Season pace and the playoff window answer different questions, so they are two tags
+// rather than one number — and they belong on anyone worth claiming, not just the bench.
+function horizonTags(player) {
+  const tags = [el("span", "tag", `${player.keep.toFixed(1)}/g pace`)];
+  if (player.playoff !== null && player.playoff !== undefined) {
+    tags.push(el("span", "tag playoff", `${player.playoff.toFixed(1)}/g playoffs`));
+  }
+  return tags;
+}
+
 function why(row, player) {
   if (player.reasons && player.reasons.length) {
     row.append(el("div", "lwhy", player.reasons.join("; ")));
@@ -746,12 +756,8 @@ function renderLineup(data) {
   show(benchCard, (data.bench || []).length > 0);
   const bench = clear(benchCard.querySelector(".body"));
   (data.bench || []).forEach((player) => {
-    const extra = el("span", "tag", `${player.keep.toFixed(1)}/g pace`);
-    const row = playerRow(player, extra);
-    if (player.playoff !== null && player.playoff !== undefined) {
-      // The two are different questions, so they are two tags rather than one number.
-      extra.after(el("span", "tag playoff", `${player.playoff.toFixed(1)}/g playoffs`));
-    }
+    const row = playerRow(player);
+    row.querySelector(".lmain").append(...horizonTags(player));
     bench.append(row);
   });
 
@@ -773,11 +779,8 @@ function renderCandidates(card, candidates) {
         ? el("span", "tag warn", `waivers → ${fmtTime(candidate.clears_at)}`)
         : null;
     row.append(nameBlock(candidate.player, status));
-    if (candidate.player.playoff !== null && candidate.player.playoff !== undefined) {
-      // A claim is a roster decision, so the playoff window belongs on it too.
-      row.querySelector(".lmain").append(
-        el("span", "tag playoff", `${candidate.player.playoff.toFixed(1)}/g playoffs`));
-    }
+    // A claim is a roster decision, so both horizons belong on it, not just this week's gain.
+    row.querySelector(".lmain").append(...horizonTags(candidate.player));
     if (candidate.drop) {
       const drop = candidate.drop;
       const playoff = drop.playoff === null || drop.playoff === undefined

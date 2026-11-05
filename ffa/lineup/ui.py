@@ -124,6 +124,7 @@ def adds_table(candidates: Sequence[AddCandidate], title: str, unit: str) -> Tab
     grid.add_column("Player")
     grid.add_column("Pos")
     grid.add_column("Proj", justify="right")
+    grid.add_column("Season pace", justify="right")
     grid.add_column("Playoffs", justify="right")
     grid.add_column("Status")
     grid.add_column("Drop")
@@ -135,6 +136,7 @@ def adds_table(candidates: Sequence[AddCandidate], title: str, unit: str) -> Tab
             candidate.line.player.name,
             candidate.line.player.position,
             _points(candidate.line.points),
+            Text(f"{candidate.line.keep:.1f}/g", style="dim"),
             Text(f"{playoff:.1f}/g" if playoff is not None else "—", style="dim"),
             _status_text(candidate),
             candidate.drop.player.name if candidate.drop is not None else Text("—", style="dim"),
