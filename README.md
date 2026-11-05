@@ -190,23 +190,29 @@ different answers:
   took over a backfield on Sunday and whose projection has not caught up — and what stops a
   backup quarterback with one big week from looking like a pickup.
 
-**Two horizons, labelled as what they are.** Each bench player carries a *season pace* and a
-*playoffs* figure, and they answer different questions:
+**Two horizons, labelled as what they are.** Every player on the card carries a *rest of
+season* and a *playoffs* figure. Both are game-by-game projections of weeks still to be
+played, blended from both sources and re-scored in your league's settings, and they answer
+different questions:
 
-- **Season pace** is Sleeper's preseason season total over 18 games. It is deliberately slow
-  to move, which is what makes it a safe floor for a drop decision: it keeps an established
-  player you would regret dropping during a one-week bye.
-- **Playoffs** is a fresh, game-by-game projection of the weeks your league actually plays
-  its playoffs in, derived from `playoff_week_start` and the bracket size rather than
-  assumed, and blended from both sources like any other week. A player can be strong in one
-  window and ordinary in the other, because the schedule is different — the point of showing
-  both is to see when they disagree.
+- **Rest of season** covers every week from the one you are setting through your league's
+  final week — not week 18, which almost no league plays.
+- **Playoffs** covers only the weeks your league actually plays its playoffs in, derived
+  from `playoff_week_start` and the bracket size rather than assumed. A player can be strong
+  in one window and ordinary in the other, because the schedule is different; the point of
+  showing both is to see when they disagree.
 
-It costs almost nothing: one ESPN request already carries every remaining week, so the
-playoff weeks come free, and only Sleeper is asked per week.
+Neither is Sleeper's *season* projection. That row is written before the season and never
+revised, so a player who has since taken over a backfield still reads as the committee back
+he was in August — one real case was nine points a game on the season row against fifteen on
+the same provider's weekly rows. The season row is used in one place only, as the floor under
+a drop, where being slow to move is the right property.
 
-On a full roster every add names its drop, chosen on season pace rather than on the
-week in front of you. Judged on one week alone, every starter on a bye projects zero and
+It costs almost nothing: one ESPN request already carries every remaining week, so both
+windows come out of one response, and only Sleeper is asked per week.
+
+On a full roster every add names its drop, chosen on that slow season floor rather than on
+the week in front of you. Judged on one week alone, every starter on a bye projects zero and
 looks free to drop, which is how you trade a season-long starter for a one-week streamer.
 Whether you can actually make the claim comes from the same rules as `ffa waivers`: free
 agent now, or on waivers until a stated time.

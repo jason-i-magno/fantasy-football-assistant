@@ -13,10 +13,16 @@ Why two sources, when blending costs a second fetch and a fuzzy join:
   quietly averaging a five-point argument.
 - **Season projections go stale in a way weekly ones don't.** Sleeper's season row reflects
   the preseason depth chart and is not revised when the starter ahead of a player goes down.
-  That is a bug if you average it in and a *feature* if you difference it: a backup whose
-  fresh weekly number is far above his stale season pace has just inherited a role.
-  `Projection.role_change` is that gap, and ranking by it is what surfaces the week's real
-  waiver adds instead of the names everyone already owns.
+  Against live data one back's season row had him at 172 carries for the year while the same
+  provider's weekly rows gave him 14.5 a game -- a committee back and a lead back, five
+  points apart, from one feed. That is a bug if you average it in and a *feature* if you
+  difference it: a player whose fresh rate is far above his stale season pace has taken over
+  a role. `Projection.role_change` is that gap, and ranking by it is what surfaces the week's
+  real waiver adds instead of the names everyone already owns.
+  So the number *shown* as rest-of-season is `rest_per_game`, a fresh weekly blend over every
+  week still to play, never the season row. The season row survives in exactly one place,
+  as the floor under a drop (`advice._keep_value`), because being slow to move is the right
+  property there and the wrong one everywhere else.
 - **The house effects differ.** ESPN runs a couple of points per week hotter than Sleeper
   across the board. That is a scale difference, not staleness, and the two still rank
   players the same way, so the mean of the pair is a better point estimate than either and
@@ -83,6 +89,7 @@ class Projection:
     sleeper: float | None = None
     espn: float | None = None
     season_per_game: float | None = None  # Sleeper's season total over its projected games
+    rest_per_game: float | None = None  # fresh weekly blend over every week still to play
     playoff_per_game: float | None = None  # average over the league's playoff weeks
     on_bye: bool = False  # his team has no game this week
     no_team: bool = False  # not on an NFL roster at all, which is not the same as a bye
@@ -107,10 +114,19 @@ class Projection:
 
     @property
     def role_change(self) -> float | None:
-        """Fresh weekly number less the stale season pace: positive means a bigger role."""
+        """Fresh weekly rate less the stale season pace: positive means a bigger role.
+
+        Measured against every week still to play rather than against the one in front of
+        you. A single week is the wrong ruler twice over: a hard matchup makes a lead back
+        read like a committee back, and a player on a bye projects zero, so the check built
+        to find a role change was blind to every rostered player on a bye -- which is the
+        week his stale season row is the only number anyone can see.
+        """
         if self.season_per_game is None:
             return None
-        fresh = self.espn if self.espn is not None else self.sleeper
+        fresh = self.rest_per_game
+        if fresh is None:
+            fresh = self.espn if self.espn is not None else self.sleeper
         return None if fresh is None else fresh - self.season_per_game
 
     @property
@@ -266,6 +282,7 @@ def build(
     sleeper_season: Iterable[Mapping[str, Any]] = (),
     espn_week: Iterable[ESPNPlayer] = (),
     playing_teams: frozenset[str] | None = None,
+    rest: Mapping[str, float] | None = None,
     playoff: Mapping[str, float] | None = None,
 ) -> dict[str, Projection]:
     """A `Projection` for every player either source has a weekly number for.
@@ -320,6 +337,7 @@ def build(
             sleeper=sleeper_points,
             espn=espn_points,
             season_per_game=_season_per_game(season_rows.get(player_id), scoring),
+            rest_per_game=(rest or {}).get(player_id),
             playoff_per_game=(playoff or {}).get(player_id),
             on_bye=on_bye,
             no_team=no_team,

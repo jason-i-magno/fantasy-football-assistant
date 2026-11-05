@@ -60,7 +60,8 @@ class PlayerLine:
     seat: Seat | None = None  # the slot he currently occupies, None when benched
     locked: bool = False  # his game has kicked off; Sleeper will not let him move
     reasons: tuple[str, ...] = ()  # why his points are what they are
-    keep: float = 0.0  # season pace per game; the floor on what dropping him costs
+    keep: float = 0.0  # the stale season row per game; the floor on what dropping him costs
+    rest: float | None = None  # fresh per game over every week still to play
     playoff: float | None = None  # per game over the league's remaining playoff weeks
 
     @property
@@ -169,10 +170,25 @@ def _keep_value(projection: Projection | None, this_week: float) -> float:
     so the season pace is the floor. It is the stale preseason number, which understates a
     player who has just taken over a role and overstates one who has lost it -- but it
     errs towards keeping established players, and that is the safe direction for a drop.
+    This is the one place the season row is still used, and deliberately: being slow to
+    move is the right property under a drop and the wrong one everywhere else.
     """
     if projection is None:
         return this_week
     return max(this_week, projection.season_per_game or 0.0)
+
+
+def _rest_value(projection: Projection | None, this_week: float) -> float:
+    """What a player is worth per week over the rest of the season.
+
+    The fresh blend over every week still to play when there is one, because that is the
+    number that notices a changed role; the stale season floor only when there isn't.
+    """
+    if projection is None:
+        return this_week
+    if projection.rest_per_game is not None:
+        return projection.rest_per_game
+    return _keep_value(projection, this_week)
 
 
 def _effective(
@@ -304,6 +320,7 @@ def build_advice(
             player=player, projection=projection, points=points,
             locked=locked, reasons=reasons + (("locked: his game started",) if locked else ()),
             keep=_keep_value(projection, points),
+            rest=projection.rest_per_game if projection is not None else None,
             playoff=projection.playoff_per_game if projection is not None else None,
         )
 
@@ -325,7 +342,7 @@ def build_advice(
             lines[seat.player_id] = PlayerLine(
                 player=line.player, projection=line.projection, points=line.points,
                 seat=seat, locked=line.locked, reasons=line.reasons, keep=line.keep,
-                playoff=line.playoff,
+                rest=line.rest, playoff=line.playoff,
             )
 
     points = {pid: line.points for pid, line in lines.items()}
@@ -354,7 +371,7 @@ def build_advice(
     taken = {c.line.player_id for c in adds}
     watch = tuple(
         c for c in _candidates(
-            values={pid: l.keep for pid, l in lines.items()},
+            values={pid: _rest_value(l.projection, l.points) for pid, l in lines.items()},
             horizon="season", max_adds=max_adds + len(taken), **shared,
         )
         if c.line.player_id not in taken
@@ -406,9 +423,9 @@ def _candidates(
 
     - **this week** values everyone at his week-`n` projection, which is what makes a
       streaming defense the right answer when yours is on a bye.
-    - **rest of season** values everyone at his per-game pace, which is what stops a backup
-      quarterback with a big week-`n` number from looking like a pickup in a league that
-      starts one quarterback and already has two.
+    - **rest of season** values everyone at his per-game rate over the weeks still to be
+      played, which is what stops a backup quarterback with a big week-`n` number from
+      looking like a pickup in a league that starts one quarterback and already has two.
 
     Either way the ranking is lineup impact, never raw points: a receiver behind two better
     receivers is worth nothing, however good he looks on his own, and a claim spent on him
@@ -438,7 +455,7 @@ def _candidates(
             continue
         if not player.active or not player.can_play:
             continue
-        value = projection.points if horizon == "week" else _keep_value(projection, projection.points)
+        value = projection.points if horizon == "week" else _rest_value(projection, projection.points)
         if value <= 0:
             continue
         # Order the pool by value, nudged up by any role change, so a back who took over a
@@ -455,7 +472,7 @@ def _candidates(
         playing = bool(player.team and player.team in kickoffs)
         week_points, reasons = _effective(player, projection, playing=playing)
         keep = _keep_value(projection, week_points)
-        value = week_points if horizon == "week" else keep
+        value = week_points if horizon == "week" else _rest_value(projection, week_points)
         if value <= 0:
             continue
         points[player_id] = value
@@ -469,10 +486,10 @@ def _candidates(
         if gain < MIN_ADD_GAIN:
             continue
         if projection.role_changed:
-            reasons = reasons + (f"{projection.role_change:+.1f} vs his season pace",)
+            reasons = reasons + (f"{projection.role_change:+.1f} vs his preseason row",)
         out.append(AddCandidate(
             line=PlayerLine(player=player, projection=projection, points=week_points,
-                            reasons=reasons, keep=keep,
+                            reasons=reasons, keep=keep, rest=projection.rest_per_game,
                             playoff=projection.playoff_per_game),
             gain=gain, drop=drop, status=statuses.get(player_id),
         ))

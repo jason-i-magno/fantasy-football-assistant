@@ -244,6 +244,54 @@ def test_a_fresh_week_far_above_the_season_pace_is_a_role_change():
     assert one.role_changed
 
 
+def test_the_role_change_is_measured_against_the_weeks_still_to_play():
+    """One week is the wrong ruler: a hard matchup is not a demotion."""
+    players = {"1": player("1", "RB", "Back One")}
+    built = proj.build(
+        players=players, scoring=PPR,
+        sleeper_week=[sleeper_row("1", {"rush_yd": 40.0})],  # a quiet week
+        sleeper_season=[sleeper_row("1", {"rush_yd": 234.0, "gp": 18.0})],
+        rest={"1": 14.5},
+    )
+    assert built["1"].role_change == pytest.approx(14.5 - 1.3)
+    assert built["1"].role_changed
+
+
+def test_a_role_change_is_still_visible_while_the_player_is_on_a_bye():
+    """The blind spot this replaced: on a bye the fresh week is zero, so the gap went
+    negative and the one check that can see a changed role said nothing -- in the week
+    when the stale season row is the only number the card can show."""
+    players = {"1": player("1", "RB", "Back One", team="PIT")}
+    built = proj.build(
+        players=players, scoring=PPR,
+        sleeper_week=[sleeper_row("1", {"rush_yd": 40.0})],
+        sleeper_season=[sleeper_row("1", {"rush_yd": 1710.0, "gp": 18.0})],  # 9.5 pts/g
+        playing_teams=frozenset({"SF"}),  # PIT is not playing
+        rest={"1": 14.5},
+    )
+    one = built["1"]
+    assert one.on_bye and one.points == 0.0
+    assert one.role_change == pytest.approx(14.5 - 9.5)
+    assert one.role_changed
+
+
+def test_without_a_window_the_role_change_falls_back_to_this_week():
+    players = {"1": player("1", "RB", "Back One")}
+    built = proj.build(players=players, scoring=PPR,
+                       sleeper_week=[sleeper_row("1", {"rush_yd": 100.0})],
+                       sleeper_season=[sleeper_row("1", {"rush_yd": 234.0, "gp": 18.0})])
+    assert built["1"].role_change == pytest.approx(10.0 - 1.3)
+
+
+def test_the_rest_of_season_figure_rides_along_on_the_projection():
+    players = {"1": player("1", "WR", "Wide One")}
+    built = proj.build(players=players, scoring=PPR,
+                       sleeper_week=[sleeper_row("1", {"rec": 5.0})],
+                       rest={"1": 11.0}, playoff={"1": 12.5})
+    assert built["1"].rest_per_game == 11.0 and built["1"].playoff_per_game == 12.5
+    assert built["1"].points == 5.0  # and neither disturbs this week
+
+
 # -- the playoff window -----------------------------------------------------------------
 
 

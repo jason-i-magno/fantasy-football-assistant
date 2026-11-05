@@ -292,23 +292,80 @@ def _rendered(advice):
 def test_a_waiver_candidate_shows_both_horizons_and_not_just_this_week():
     """A claim is kept for weeks, so "what is he worth later" has to be on the row too.
 
-    The playoff figure arrived first and the season pace was left on the bench table only,
-    which read as though a candidate had no rest-of-season value at all.
+    The playoff figure arrived first and the rest-of-season one was left on the bench table
+    only, which read as though a candidate had no value past Sunday at all.
     """
     from ffa.lineup.source import LineupSources
     from ffa.lineup.ui import advice_json
 
-    free_agents = [("fa_te", "TE", 15.0, 17.0)]
+    free_agents = [("fa_te", "TE", 12.0, 9.0, "SF", {"projection": {"rest_per_game": 17.0}})]
     advice = build_advice(**roster_world(SETTLED_STARTERS, SETTLED_BENCH,
                                          free_agents=free_agents))
     assert [c.line.player_id for c in advice.adds] == ["fa_te"]
-    assert advice.adds[0].line.keep == 17.0  # his pace, not the 15.0 he is worth on Sunday
+    assert advice.adds[0].line.rest == 17.0  # the fresh rate, not the 9.0 preseason row
 
     adds = _rendered(advice).split("Add this week")[1]
-    assert "Season pace" in adds and "17.0/g" in adds
+    assert "Rest of season" in adds and "17.0/g" in adds
 
     payload = advice_json(advice, LineupSources(sleeper=True, espn=False))
-    assert payload["adds"][0]["player"]["keep"] == 17.0
+    assert payload["adds"][0]["player"]["rest"] == 17.0
+
+
+def test_the_figure_shown_is_the_fresh_one_not_the_preseason_row():
+    """Against live data a back's preseason row had him in a committee at 9.5/g while the
+    same provider's weekly rows had him leading a backfield at 14.5/g. The card showed the
+    9.5 and called it rest of season."""
+    bench = SETTLED_BENCH + [("warren", "RB", 0.0, 9.5, "PIT",
+                              {"projection": {"rest_per_game": 14.5, "on_bye": True}})]
+    advice = build_advice(**roster_world(SETTLED_STARTERS, bench))
+    line = advice.line_of("warren")
+    assert line.rest == 14.5
+    assert line.keep == 9.5  # the drop floor is still the slow number, deliberately
+    assert "14.5/g" in _rendered(advice)
+
+
+def test_a_player_the_weekly_feed_has_no_row_for_keeps_his_season_floor():
+    """Only the *display* falls back to a dash. Ranking him at zero would make a player
+    nobody is projecting this week the obvious man to drop, which is the old bug."""
+    free_agents = [("no_rows", "RB", 0.0, 16.0)]  # season row only, no fresh rate
+    advice = build_advice(**roster_world(SETTLED_STARTERS, SETTLED_BENCH,
+                                         free_agents=free_agents))
+    watch = {c.line.player_id: c for c in advice.watch}
+    assert "no_rows" in watch and watch["no_rows"].line.rest is None
+    assert watch["no_rows"].line.keep == 16.0
+
+
+def test_a_starter_carries_the_same_two_horizons_as_the_bench():
+    """A starter is a keep-or-trade decision too: the week he is strong in is not always
+    the week the league is decided in, and the card said nothing about either for him."""
+    from ffa.lineup.source import LineupSources
+    from ffa.lineup.ui import advice_json
+
+    starters = [(pid, pos, pts, season) for pid, pos, pts, season in SETTLED_STARTERS]
+    starters[0] = ("qb", "QB", 19.0, 19.0, "SF",
+                   {"projection": {"rest_per_game": 21.0, "playoff_per_game": 23.0}})
+    advice = build_advice(**roster_world(starters, SETTLED_BENCH))
+
+    line = advice.line_of("qb")
+    assert line.starting and line.rest == 21.0 and line.playoff == 23.0
+
+    lineup = _rendered(advice).split("Bench")[0]
+    assert "Rest of season" in lineup and "21.0/g" in lineup and "23.0/g" in lineup
+
+    seat = advice_json(advice, LineupSources(sleeper=True, espn=False))["lineup"][0]
+    assert seat["player"]["rest"] == 21.0 and seat["player"]["playoff"] == 23.0
+
+
+def test_the_watchlist_ranks_on_the_fresh_rate_not_the_stale_row():
+    """Two free agents the preseason rows rank backwards: one has taken over a role and
+    one has lost it, and only the weekly feed knows."""
+    free_agents = [
+        ("riser", "RB", 10.0, 6.0, "SF", {"projection": {"rest_per_game": 16.0}}),
+        ("fader", "RB", 10.0, 16.0, "SF", {"projection": {"rest_per_game": 6.0}}),
+    ]
+    advice = build_advice(**roster_world(SETTLED_STARTERS, SETTLED_BENCH,
+                                         free_agents=free_agents))
+    assert [c.line.player_id for c in advice.watch] == ["riser"]
 
 
 # -- more than one league ---------------------------------------------------------------
