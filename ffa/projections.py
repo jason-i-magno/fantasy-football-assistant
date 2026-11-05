@@ -90,7 +90,9 @@ class Projection:
     espn: float | None = None
     season_per_game: float | None = None  # Sleeper's season total over its projected games
     rest_per_game: float | None = None  # fresh weekly blend over every week still to play
+    rest_sources: tuple[str, ...] = ()  # which feeds stand behind that blend
     playoff_per_game: float | None = None  # average over the league's playoff weeks
+    playoff_sources: tuple[str, ...] = ()
     on_bye: bool = False  # his team has no game this week
     no_team: bool = False  # not on an NFL roster at all, which is not the same as a bye
     sources: tuple[str, ...] = ()
@@ -137,6 +139,18 @@ class Projection:
     @property
     def single_source(self) -> bool:
         return len(self.sources) == 1
+
+    @property
+    def forward_single_source(self) -> bool:
+        """True when one feed alone stands behind the figures a roster move is judged on.
+
+        Read off the rest-of-season window, which contains the playoff weeks: a player two
+        feeds agree about over the season is not a player one feed invented. It is a
+        different question from `single_source`, which is about this Sunday -- a player can
+        have both opinions this week and only one about December, which is exactly the
+        shape of a backup the other feed has not written up yet.
+        """
+        return len(self.rest_sources) == 1
 
 
 def _index_sleeper(rows: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -228,6 +242,14 @@ def playoff_weeks(settings: Mapping[str, Any]) -> tuple[int, ...]:
     return tuple(week for week in range(start, start + weeks) if week <= LAST_WEEK)
 
 
+@dataclass(frozen=True, slots=True)
+class WindowValue:
+    """A per-game figure over a set of weeks, and what it rests on."""
+
+    points: float
+    sources: tuple[str, ...]  # every feed that contributed to any week in the window
+
+
 def window_per_game(
     *,
     players: Mapping[str, Player],
@@ -235,15 +257,21 @@ def window_per_game(
     weeks: Sequence[int],
     sleeper_weeks: Mapping[int, Iterable[Mapping[str, Any]]] | None = None,
     espn_weeks: Mapping[int, Iterable[ESPNPlayer]] | None = None,
-) -> dict[str, float]:
+) -> dict[str, WindowValue]:
     """Average points per game over a set of weeks, blended the same way as any other week.
 
     A mean over the window, not a total: a player missing from one week's feed should not
     look worse than one the feed happens to cover, and the number is read as "per game".
+
+    The sources are carried out with it because the mean hides them. A figure both feeds
+    built and one ESPN built alone look identical as a number, and the second is the shape
+    of a backup one feed has written up and the other has not -- worth saying out loud now
+    that these figures decide drops and rank the watchlist.
     """
     sleeper_weeks = sleeper_weeks or {}
     espn_weeks = espn_weeks or {}
     totals: dict[str, list[float]] = {}
+    seen: dict[str, set[str]] = {}
     for week in weeks:
         weekly = build(
             players=players,
@@ -254,7 +282,12 @@ def window_per_game(
         for player_id, projection in weekly.items():
             if projection.sources:  # a week nobody projected him for is not a zero
                 totals.setdefault(player_id, []).append(projection.points)
-    return {pid: sum(values) / len(values) for pid, values in totals.items() if values}
+                seen.setdefault(player_id, set()).update(projection.sources)
+    return {
+        pid: WindowValue(points=sum(values) / len(values),
+                         sources=tuple(sorted(seen.get(pid, ()))))
+        for pid, values in totals.items() if values
+    }
 
 
 def _season_per_game(stats: Mapping[str, Any] | None, scoring: Mapping[str, Any]) -> float | None:
@@ -282,8 +315,8 @@ def build(
     sleeper_season: Iterable[Mapping[str, Any]] = (),
     espn_week: Iterable[ESPNPlayer] = (),
     playing_teams: frozenset[str] | None = None,
-    rest: Mapping[str, float] | None = None,
-    playoff: Mapping[str, float] | None = None,
+    rest: Mapping[str, "WindowValue"] | None = None,
+    playoff: Mapping[str, "WindowValue"] | None = None,
 ) -> dict[str, Projection]:
     """A `Projection` for every player either source has a weekly number for.
 
@@ -304,6 +337,8 @@ def build(
         position = player.position if player is not None else None
         team = player.team if player is not None else None
         espn_row = espn_by_id.get(player_id)
+        rest_window = (rest or {}).get(player_id)
+        playoff_window = (playoff or {}).get(player_id)
         if position is None:
             if espn_row is None:
                 continue  # a Sleeper row for someone outside the fantasy player map
@@ -337,8 +372,10 @@ def build(
             sleeper=sleeper_points,
             espn=espn_points,
             season_per_game=_season_per_game(season_rows.get(player_id), scoring),
-            rest_per_game=(rest or {}).get(player_id),
-            playoff_per_game=(playoff or {}).get(player_id),
+            rest_per_game=rest_window.points if rest_window is not None else None,
+            rest_sources=rest_window.sources if rest_window is not None else (),
+            playoff_per_game=playoff_window.points if playoff_window is not None else None,
+            playoff_sources=playoff_window.sources if playoff_window is not None else (),
             on_bye=on_bye,
             no_team=no_team,
             sources=sources,
