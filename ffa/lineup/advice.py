@@ -23,7 +23,7 @@ from datetime import datetime
 
 from ..models import Player, to_int
 from ..projections import SLEEPER_ONLY_POSITIONS, SPREAD_FLAG, Projection
-from ..roster import starting_slots
+from ..roster import active_slots, reserved, starting_slots
 from ..waivers.status import FREE_AGENT, ROSTERED, WaiverReport, WaiverStatus
 from .optimal import Lineup, Seat, best_lineup
 
@@ -50,6 +50,10 @@ MIN_SWAP_GAIN = 0.1
 PLAYOFF_WEEK_WEIGHT = 2.0
 
 
+# How a reserve slot reads on a card. Keyed by `roster.reserved`'s slot names.
+RESERVE_REASON: dict[str, str] = {"IR": "in an IR slot", "TAXI": "on the taxi squad"}
+
+
 class NoRosterError(Exception):
     """The configured user has no roster in this league."""
 
@@ -63,6 +67,7 @@ class PlayerLine:
     points: float  # what he is worth to the lineup, after byes and injuries zero him out
     seat: Seat | None = None  # the slot he currently occupies, None when benched
     locked: bool = False  # his game has kicked off; Sleeper will not let him move
+    reserved: str | None = None  # "IR"/"TAXI" when held off the active roster, else None
     reasons: tuple[str, ...] = ()  # why his points are what they are
     keep: float = 0.0  # the stale season row per game; the floor on what dropping him costs
     rest: float | None = None  # fresh per game over every week still to play
@@ -231,15 +236,22 @@ def player_line(
     kickoffs: Mapping[str, datetime],
     now: datetime,
     horizon: Horizon,
+    reserved: str | None = None,
 ) -> PlayerLine:
     """One player as any card shows him: this week, both horizons, and why.
 
     Shared by the roster being advised and by every other roster in the league, so another
     manager's page cannot drift into showing a differently-computed number from your own.
+
+    `reserved` is the slot holding him off the active roster, from `roster.reserved`. It is
+    the caller's to supply because it is a fact about a roster rather than about a player:
+    the same man is on IR for one manager and a free agent to everyone else.
     """
     playing = bool(player.team and player.team in kickoffs)
-    points, reasons = _effective(player, projection, playing=playing)
-    note = _forward_note(player, projection, reasons)
+    points, reasons = _effective(player, projection, playing=playing, reserved=reserved)
+    # Not for a player who cannot be played: where his figures came from is the second
+    # question, and on a row that already says he is unavailable there is no first one.
+    note = None if reserved else _forward_note(player, projection, reasons)
     if note is not None:
         reasons = reasons + (note,)
     kickoff = kickoffs.get(player.team or "")
@@ -249,6 +261,7 @@ def player_line(
         projection=projection,
         points=points,
         locked=locked,
+        reserved=reserved,
         reasons=reasons + (("locked: his game started",) if locked else ()),
         keep=horizon.keep(projection, points),
         rest=projection.rest_per_game if projection is not None else None,
@@ -275,7 +288,8 @@ def _forward_note(
 
 
 def _effective(
-    player: Player, projection: Projection | None, *, playing: bool
+    player: Player, projection: Projection | None, *, playing: bool,
+    reserved: str | None = None,
 ) -> tuple[float, tuple[str, ...]]:
     """What a player is worth to the lineup, and why.
 
@@ -283,7 +297,13 @@ def _effective(
     has ruled out, so an explicit Out/IR designation wins over the number. "Questionable" is
     deliberately left alone -- it is the designation most likely to be a stale in-game tag
     that nobody cleared, and benching a healthy starter over one costs more than it saves.
+
+    A reserve slot is checked before anything else, byes included. The one player on IR in
+    the `.env` league was also on a bye, and his card read "on bye" -- which is true, and is
+    not the news. A week off and a season on IR are different facts and the second one wins.
     """
+    if reserved:
+        return 0.0, (RESERVE_REASON.get(reserved, "held off the active roster"),)
     reasons: list[str] = []
     points = projection.points if projection is not None else 0.0
     if projection is not None and projection.no_team:
@@ -391,6 +411,7 @@ def build_advice(
     roster_id = to_int(roster.get("roster_id")) or 0
     slots = starting_slots(league.get("roster_positions") or ())
     owned = [str(p) for p in (roster.get("players") or ()) if p]
+    held = reserved(roster)  # player_id -> the slot holding him off the active roster
     starters = [str(p) for p in (current_starters if current_starters is not None
                                  else roster.get("starters") or ())]
 
@@ -401,7 +422,8 @@ def build_advice(
         if player is None:
             continue
         lines[player_id] = player_line(player, projections.get(player_id),
-                                       kickoffs=kickoffs, now=now, horizon=horizon)
+                                       kickoffs=kickoffs, now=now, horizon=horizon,
+                                       reserved=held.get(player_id))
 
     # Seat the lineup as it stands. Sleeper writes "0" for an empty starting slot.
     seats: list[Seat] = []
@@ -420,18 +442,25 @@ def build_advice(
         if seat.player_id and (line := lines.get(seat.player_id)) is not None:
             lines[seat.player_id] = PlayerLine(
                 player=line.player, projection=line.projection, points=line.points,
-                seat=seat, locked=line.locked, reasons=line.reasons, keep=line.keep,
+                seat=seat, locked=line.locked, reserved=line.reserved,
+                reasons=line.reasons, keep=line.keep,
                 rest=line.rest, playoff=line.playoff,
             )
 
     points = {pid: line.points for pid, line in lines.items()}
     eligibility = {pid: frozenset(line.player.fantasy_positions) for pid, line in lines.items()}
     pinned = {s.index: s.player_id for s in seats if s.locked and s.player_id}
-    locked_bench = [pid for pid, line in lines.items() if line.locked and not line.starting]
+    # Nobody who cannot be moved into a slot: a bench player whose game has kicked off, and
+    # anyone in a reserve slot, who has to be activated first -- which needs a free active
+    # roster spot and is a transaction, not a lineup change. Left in the pool this was not a
+    # hypothetical: one `.env` league's card advised starting a back out of an IR slot over
+    # a healthy tight end, 0.4 of the week's claimed gain on a move the league would refuse.
+    unstartable = [pid for pid, line in lines.items()
+                   if (line.locked and not line.starting) or line.reserved]
 
     optimal = best_lineup(
         slots, points, eligibility,
-        roster=set(lines), pinned=pinned, unavailable=locked_bench,
+        roster=set(lines), pinned=pinned, unavailable=unstartable,
     )
     # Judge the threshold on the week as a whole. The set-based diff below reports only real
     # changes, so if the whole week is worth a rounding error there is nothing to report.
@@ -440,8 +469,13 @@ def build_advice(
     shared = dict(
         report=report, statuses=statuses, players=players, projections=projections,
         lines=lines, slots=slots, kickoffs=kickoffs, pinned=pinned,
-        locked_bench=locked_bench, horizon=horizon,
-        roster_full=len(owned) >= len(league.get("roster_positions") or ()),
+        unstartable=unstartable, horizon=horizon,
+        # Only the active roster, on both sides: a reserve slot is extra capacity, so a
+        # player on IR is not occupying the spot an add needs and does not make the bench
+        # full. Sleeper keeps that capacity in `settings.reserve_slots` rather than in
+        # `roster_positions`, so counting the list as it comes overstates the room by one.
+        roster_full=(len([pid for pid in owned if pid not in held])
+                     >= len(active_slots(league.get("roster_positions") or ()))),
     )
     adds = _candidates(
         values={pid: l.points for pid, l in lines.items()},
@@ -490,7 +524,7 @@ def _candidates(
     kickoffs: Mapping[str, datetime],
     values: Mapping[str, float],
     pinned: Mapping[int, str],
-    locked_bench: Sequence[str],
+    unstartable: Sequence[str],
     roster_full: bool,
     horizon: Horizon,
     basis: str,
@@ -519,11 +553,14 @@ def _candidates(
         return best_lineup(
             slots, points, eligibility, roster=members,
             pinned={i: pid for i, pid in pinned.items() if pid in members},
-            unavailable=[pid for pid in locked_bench if pid in members],
+            unavailable=[pid for pid in unstartable if pid in members],
         ).total
 
     baseline = solve(roster)
-    droppable = [l for l in lines.values() if not l.locked]
+    # A player in a reserve slot is not a drop. He is not in the spot the add needs, so
+    # letting him go frees nothing, and Sleeper will not take him as the other half of the
+    # transaction -- which is exactly the advice that came back as "but he is on IR".
+    droppable = [l for l in lines.values() if not l.locked and not l.reserved]
 
     pool: list[tuple[float, str]] = []
     for status in report.statuses:

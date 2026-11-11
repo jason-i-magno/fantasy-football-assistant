@@ -46,11 +46,15 @@ def projection(player_id, position, points, *, season=None, team="SF", **kwargs)
                       sleeper=points, season_per_game=season, **kwargs)
 
 
-def roster_world(starters, bench, *, free_agents=(), now=NOW, kickoffs=None):
-    """Assemble the whole input set for `build_advice` from (id, pos, points, season) tuples."""
+def roster_world(starters, bench, *, free_agents=(), ir=(), now=NOW, kickoffs=None):
+    """Assemble the whole input set for `build_advice` from (id, pos, points, season) tuples.
+
+    `ir` goes into the roster's `reserve` list *and* into `players`, which is how Sleeper
+    reports it: a player on IR is in both, so a reader of `players` alone sees a bench.
+    """
     players, projections, statuses = {}, {}, []
     owned = []
-    for group, rostered in ((starters, True), (bench, True), (free_agents, False)):
+    for group, rostered in ((starters, True), (bench, True), (ir, True), (free_agents, False)):
         for entry in group:
             pid, position, points, season = entry[0], entry[1], entry[2], entry[3]
             team = entry[4] if len(entry) > 4 else "SF"
@@ -72,6 +76,7 @@ def roster_world(starters, bench, *, free_agents=(), now=NOW, kickoffs=None):
         statuses=statuses, locked_teams={},
     )
     rosters = [{"roster_id": 3, "owner_id": "u1", "players": owned,
+                "reserve": [e[0] for e in ir],
                 "starters": [s[0] for s in starters]}]
     return dict(report=report, league=LEAGUE, rosters=rosters, user_id="u1",
                 projections=projections, players=players, week=9,
@@ -233,6 +238,113 @@ def test_a_full_roster_names_the_drop_and_spares_a_bye_week_starter():
     assert advice.adds
     drop = advice.adds[0].drop
     assert drop is not None and drop.player_id == "deadweight"
+
+
+# -- reserve slots ---------------------------------------------------------------------
+
+
+def test_a_player_in_an_ir_slot_is_never_named_as_the_drop():
+    """Reported from the phone: "it says drop him, but he is on IR so I can't do that."
+
+    Dropping a player out of a reserve slot frees nothing on the active roster, so it is
+    not the other half of an add -- and Sleeper will not accept it as one.
+
+    He is picked by the floor, not by the week: both he and the spare back leave this
+    week's lineup untouched, so the two tie and the lowest value from here decides -- and
+    the man on IR is worth least from here for the same reason he is on IR.
+    """
+    bench = [("deadweight", "RB", 1.0, 3.0)]
+    world = roster_world(SETTLED_STARTERS, bench,
+                         ir=[("hurt", "RB", 0.0, 0.5, "PIT")],
+                         free_agents=[("fa_def", "DEF", 18.0, 18.0)])
+    owned = world["rosters"][0]["players"]
+    # Full on the active roster, with the man on IR sitting outside it.
+    owned += [f"filler{i}" for i in range(15 - (len(owned) - 1))]
+    advice = build_advice(**world)
+    assert advice.adds
+    drop = advice.adds[0].drop
+    assert drop is not None and drop.player_id == "deadweight"
+    assert all(c.drop is None or c.drop.player_id != "hurt" for c in advice.adds + advice.watch)
+
+
+def test_an_ir_slot_is_not_a_bench_spot_so_the_roster_is_not_full():
+    """A filled reserve slot is extra capacity, not a used roster spot.
+
+    `roster_positions` is 15 slots and the roster holds 16 players, one of them on IR, so
+    counting the list as it comes says "full" and demands a drop for an add that needs none.
+    """
+    world = roster_world(SETTLED_STARTERS, SETTLED_BENCH,
+                         ir=[("hurt", "WR", 0.0, 9.0, "PIT")],
+                         free_agents=[("fa_def", "DEF", 18.0, 18.0)])
+    owned = world["rosters"][0]["players"]
+    owned += [f"filler{i}" for i in range(14 - (len(owned) - 1))]  # one spot left open
+    advice = build_advice(**world)
+    assert advice.adds and advice.adds[0].drop is None
+
+
+def test_an_ir_slot_listed_among_the_roster_positions_is_not_capacity_either():
+    """The other spelling. Neither `.env` league uses it, so only a test can hold it.
+
+    Sleeper carries reserve capacity in `settings.reserve_slots` for both of them and lists
+    no "IR" entry at all; leagues that do list it would otherwise have the tool count a
+    reserve slot as somewhere an added player could sit. Two IR slots with one of them used,
+    because a count of the whole list only comes out wrong when they are not all filled.
+    """
+    world = roster_world(SETTLED_STARTERS, SETTLED_BENCH,
+                         ir=[("hurt", "WR", 0.0, 9.0, "PIT")],
+                         free_agents=[("fa_def", "DEF", 18.0, 18.0)])
+    world["league"] = {**LEAGUE, "roster_positions": SLOTS + ["BN"] * 3 + ["IR"] * 2}
+    owned = world["rosters"][0]["players"]
+    owned += [f"filler{i}" for i in range(13 - (len(owned) - 1))]  # 13 of 13 active spots
+    advice = build_advice(**world)
+    assert advice.adds and advice.adds[0].drop is not None  # full, despite the spare IR slot
+    assert advice.adds[0].drop.player_id != "hurt"
+
+
+def test_a_player_in_an_ir_slot_is_never_advised_as_a_start():
+    """He has to be activated first, which is a transaction and needs a free roster spot.
+
+    Not a hypothetical: one `.env` league's week-10 card advised a FLEX change that moved a
+    back out of an IR slot and a healthy tight end out of the lineup, because the back
+    outprojected the man the solver was displacing -- 0.4 points of the week's claimed gain
+    on a move the league would refuse. Here he beats a starter by more, to leave no doubt
+    about which way the assertion points.
+    """
+    starters = list(SETTLED_STARTERS)
+    starters[2] = ("rb2", "RB", 4.0, 4.0)
+    world = roster_world(starters, SETTLED_BENCH, ir=[("hurt", "RB", 20.0, 20.0)])
+    advice = build_advice(**world)
+    assert all(s.into.player_id != "hurt" for s in advice.swaps)
+    assert "hurt" not in {seat.player_id for seat in advice.optimal.seats}
+    assert advice.optimal.total == pytest.approx(advice.current.total + 5.0)  # rb3 off the bench
+
+
+def test_a_reserve_slot_outranks_a_bye_on_the_card():
+    """The one IR player in the `.env` league was also on a bye, and his card said "on bye".
+
+    True, and not the news: a week off and a season on IR are different facts, and the
+    reasons are ordered so the one that governs is the one shown.
+    """
+    world = roster_world(SETTLED_STARTERS, SETTLED_BENCH,
+                         ir=[("hurt", "WR", 0.0, 9.0, "PIT")])
+    advice = build_advice(**world)
+    line = advice.lines["hurt"]
+    assert line.reserved == "IR"
+    assert line.reasons == ("in an IR slot",)
+    assert line.points == 0.0
+
+
+def test_another_managers_ir_players_are_not_points_left_on_his_bench():
+    """"He left eleven points on the bench" has to mean points he could have started."""
+    world, build = league_world({
+        3: (SETTLED_STARTERS, SETTLED_BENCH),
+        4: (SETTLED_STARTERS, [], [("their_hurt", "WR", 30.0, 30.0)]),
+    })
+    view = build(**world)
+    rival = view.team(4)
+    assert rival.left_on_bench == pytest.approx(0.0)
+    assert [l.player_id for l in rival.bench] == ["their_hurt"]
+    assert rival.bench[0].reasons == ("in an IR slot",)
 
 
 def test_one_bye_does_not_fill_the_list_with_interchangeable_streamers():
@@ -478,16 +590,19 @@ def league_world(teams, *, mine=3, matchups=None, users=None):
     from ffa.lineup.league import build_league_view
 
     players, projections, rosters = {}, {}, []
-    for roster_id, (starters, bench) in teams.items():
+    for roster_id, entries in teams.items():
+        starters, bench = entries[0], entries[1]
+        ir = entries[2] if len(entries) > 2 else []
         owned = []
-        for entry in [*starters, *bench]:
+        for entry in [*starters, *bench, *ir]:
             pid, position, points, season = entry[0], entry[1], entry[2], entry[3]
             team = entry[4] if len(entry) > 4 else "SF"
             players[pid] = player(pid, position, team=team)
             projections[pid] = projection(pid, position, points, season=season, team=team)
             owned.append(pid)
         rosters.append({"roster_id": roster_id, "owner_id": f"u{roster_id}",
-                        "players": owned, "starters": [s[0] for s in starters]})
+                        "players": owned, "reserve": [e[0] for e in ir],
+                        "starters": [s[0] for s in starters]})
     return dict(
         league=LEAGUE, rosters=rosters,
         users=users if users is not None else [
