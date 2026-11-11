@@ -161,6 +161,22 @@ to get wrong, in the order they bite:
   about an opponent on a Sunday, but it suggests no swap, add or drop for a roster you
   cannot change. It rides on the same build as your own advice: one extra cached request
   (the league's user list) and no second fetch of anything expensive.
+- **A reserve slot is not a bench spot.** Sleeper's `players` is every player on a roster,
+  IR and taxi squad included, and `reserve`/`taxi` name the ones outside the active roster;
+  matchup entries repeat the same combined list, so this is true of every team in the
+  league. Read literally it makes a player on IR look like a bench player, which went wrong
+  three ways at once: he was named as the drop to make room for an add (reported from the
+  phone as "it says drop him, but he is on IR so I can't do that") because he projects
+  nothing and is worth least from here; he counted as occupying a roster spot, so a bench
+  with a free place read as full; and he stayed in the pool the optimal lineup is solved
+  from, which in the second `.env` league was live advice to start a back out of an IR slot
+  over a healthy tight end -- 0.4 of the week's claimed gain resting on a move Sleeper would
+  not accept without activating him first. `roster.reserved` is the fact and
+  `roster.active_slots` the capacity -- reserve capacity lives in `settings.reserve_slots`
+  in both `.env` leagues and in `roster_positions` in others, so counting that list as it
+  comes is wrong in one direction or the other. The slot is also checked ahead of the bye in
+  `_effective`: the one IR player in the `.env` league was on a bye too, and his card said
+  "on bye", which is true and is not the news.
 - **Byes come from the kickoff schedule.** Both feeds publish a row for a team on bye
   (Sleeper's empty, ESPN's with `appliedTotal` 0), so "no projection" finds nothing. A
   player with no NFL team at all is a different thing and must not be called a bye.

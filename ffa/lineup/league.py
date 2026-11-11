@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 from ..models import Player, to_int
 from ..projections import Projection
-from ..roster import starting_slots
+from ..roster import reserved, starting_slots
 from .advice import Horizon, PlayerLine, player_line
 from .optimal import best_lineup
 
@@ -137,10 +137,13 @@ def build_league_view(
         # set for Sleeper's current week, which is the right fallback and the wrong answer.
         owned = [str(p) for p in (entry.get("players") or roster.get("players") or ()) if p]
         set_starters = [str(p) for p in (entry.get("starters") or roster.get("starters") or ())]
+        # From the roster: a matchup entry repeats the combined player list but carries no
+        # reserve list of its own, and every team in the `.env` league had someone on IR.
+        held = reserved(roster)
 
         lines = {
             pid: player_line(player, projections.get(pid), kickoffs=kickoffs, now=now,
-                             horizon=horizon)
+                             horizon=horizon, reserved=held.get(pid))
             for pid in owned
             if (player := players.get(pid)) is not None
         }
@@ -159,6 +162,9 @@ def build_league_view(
             {pid: l.points for pid, l in lines.items()},
             {pid: frozenset(l.player.fantasy_positions) for pid, l in lines.items()},
             roster=set(lines),
+            # His IR players are not his to field either, and counting them would charge
+            # him for leaving points on a bench they are not sitting on.
+            unavailable=[pid for pid, l in lines.items() if l.reserved],
         ).total
 
         name, manager = names.get(roster_id, (f"Roster {roster_id}", None))
