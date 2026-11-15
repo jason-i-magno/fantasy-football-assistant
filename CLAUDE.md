@@ -48,6 +48,9 @@ those as a web app for a phone on the same network).
   `advice.player_line` so a rival's card cannot drift from your own.
 - `ffa/scoring.py`, `ffa/projections.py`, `ffa/espn_fantasy.py`, `ffa/roster.py`: the
   projection layer, shared because more than one tool needs points and slot rules.
+- `ffa/playoffs.py`: the playoff race (see below). Pure arithmetic over a table and a
+  schedule, with no idea what a projection is, which is why it is here and not in
+  `lineup/`.
 - `ffa/leagues.py`: the configured leagues (`SLEEPER_LEAGUE_IDS`) and name lookup, so
   `--league <name>` works and the phone shows chips instead of nineteen-digit ids. Names come
   from Sleeper, never from config: a second place to keep a name is a second place for it
@@ -165,6 +168,48 @@ to get wrong, in the order they bite:
   (Sleeper's empty, ESPN's with `appliedTotal` 0), so "no projection" finds nothing. A
   player with no NFL team at all is a different thing and must not be called a bye.
 
+## Playoff race
+
+`ffa/playoffs.py` answers "how many wins do I need", for every team. It is pure: a table, a
+schedule and a number of places in, a `PlayoffPicture` out. `lineup/league.py::race` is the
+only thing that assembles it from Sleeper payloads, and it rides on the lineup build, so the
+League tab and `ffa lineup --teams` draw the same numbers.
+
+- **Two numbers, never one.** `wins_to_clinch` is arithmetic: the wins that take a place
+  whatever else happens. `odds` is a coin-flip simulation. They disagree constantly -- an
+  8-0 team needs one win to be *certain* and is at ~100% without it -- and conflating them
+  would make the honest number look wrong. Both are labelled wherever they are drawn.
+- **Tiebreaks stay out of the guaranteed numbers.** A clinch assumes every team level with
+  you wins the tiebreak, an elimination assumes you do. That is what makes the number a
+  guarantee: the tiebreak is points-for, and those points have not been scored yet. The
+  odds do use points-for as it stands, because a simulation has to rank somehow, and say so.
+- **It is a question about the schedule, not the win column.** The tempting version adds
+  `games_left` to every rival's wins and counts who is above you. It is wrong, because the
+  games left are played *against each other*: nine rivals cannot all win out. Three rosters
+  sat on 3-5 in the `.env` league with five games each, all reaching eight wins by winning
+  out, and only one of them clinched by doing it -- the one whose remaining fixtures
+  included the other two, because beating them is what stops them matching it. A fixture
+  count gives all three the same answer and is wrong twice. `_reachable` and `_assignable`
+  are the real constraint, as max-flow from each game to the teams allowed to win it.
+- **Which weeks are still open comes from the league, not the calendar.** Three traps:
+  `nfl_state.week` is not to be trusted (it has read 9 while the app showed week 8); a week
+  in progress is *scored but not recorded*, so on a live Sunday every week-10 matchup has
+  points and nobody's record has moved; and a league can start late -- one `.env` league has
+  `start_week: 2` and its week 1 comes back fully paired with no points at all, a fixture
+  nobody will ever play. `last_scored_leg` and `start_week` answer all three without reading
+  a matchup, and `reconciles` checks them against the games in the table, because both
+  fields are undocumented. Only the open weeks are fetched.
+- **Playoff weeks are not regular-season games.** Weeks 15-17 come back from the matchups
+  endpoint fully paired and identical in shape to a real fixture. Counted in, they add three
+  rounds of games anyone can still win a place with. `regular_season_end` is the cut.
+- **A league shape that is not modelled is refused by name.** `league_average_match` (every
+  team also scored against the weekly median) is a second result a week, and divisions seed
+  their winners ahead of the table. Both would make the numbers wrong rather than
+  approximate, so `unsupported` returns a reason and the card shows it instead of a table.
+- `tests/test_playoffs.py` keeps a brute-force cross-check: small leagues played out over
+  every one of their 2^games outcomes, with the flow required to agree. There is no simpler
+  correct implementation to check against, so there is an independent one.
+
 ## Web app
 
 `ffa serve` is a WSGI app with no framework and no new dependency: `ffa/web/app.py` routes,
@@ -172,7 +217,8 @@ to get wrong, in the order they bite:
 `static/` is the whole UI (three files, vanilla JS, no build step — they ship inside the
 package, like `draft/prompts/research.md`). Four tabs: Lineup (the default), League,
 Waivers, Draft. Lineup and League are drawn from one `/api/lineup` response, so opening the
-second costs nothing and cannot show a number the first disagrees with.
+second costs nothing and cannot show a number the first disagrees with. The League tab leads
+with the playoff race for the whole league, then a picker for one team's lineup.
 
 - Nothing fantasy-related lives in the browser. `payload.py` renders the same `DraftView`
   `ui.py` draws, so a fix to the pipeline reaches both surfaces at once. If the UI needs a

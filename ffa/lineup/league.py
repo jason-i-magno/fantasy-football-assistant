@@ -18,6 +18,16 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from ..models import Player, to_int
+from ..playoffs import (
+    PlayoffPicture,
+    build_picture,
+    games,
+    reconciles,
+    regular_season_end,
+    standings,
+    undecided_weeks,
+    unsupported,
+)
 from ..projections import Projection
 from ..roster import starting_slots
 from .advice import Horizon, PlayerLine, player_line
@@ -60,6 +70,7 @@ class LeagueView:
     league_name: str
     week: int
     teams: tuple[TeamCard, ...] = ()
+    playoffs: PlayoffPicture | None = None  # the race, when the schedule was fetched
 
     def team(self, roster_id: int | None) -> TeamCard | None:
         return next((t for t in self.teams if t.roster_id == roster_id), None)
@@ -119,8 +130,14 @@ def build_league_view(
     now,
     my_roster_id: int | None = None,
     horizon: Horizon | None = None,
+    schedule: Mapping[int, Sequence[Mapping]] | None = None,
 ) -> LeagueView:
-    """Score every roster in the league for one week. Pure: nothing here fetches."""
+    """Score every roster in the league for one week. Pure: nothing here fetches.
+
+    `schedule` is the remaining regular-season weeks' matchups, which turn into the playoff
+    race. Left out, the view is the lineups alone -- the race is the one thing here that
+    needs weeks other than this one, so it is the one thing a caller can decline to pay for.
+    """
     horizon = horizon or Horizon()
     slots = starting_slots(league.get("roster_positions") or ())
     names = team_names(users, rosters)
@@ -172,7 +189,39 @@ def build_league_view(
     # Yours first and your opponent next, because those are the two anyone opens; the rest
     # by the lineup they have set, which is the closest thing to a standings order here.
     cards.sort(key=lambda c: (not c.is_mine, not c.is_opponent, -c.total))
-    return LeagueView(league_name=str(league.get("name") or ""), week=week, teams=tuple(cards))
+    return LeagueView(
+        league_name=str(league.get("name") or ""), week=week, teams=tuple(cards),
+        playoffs=None if schedule is None else race(league, rosters, schedule),
+    )
+
+
+def race(
+    league: Mapping, rosters: Sequence[Mapping], schedule: Mapping[int, Sequence[Mapping]]
+) -> PlayoffPicture:
+    """The playoff race from the table and the weeks still to be played.
+
+    A league shape the maths does not model comes back as a picture with no teams in it and
+    the reason in `notes`, so the card says why there is no table rather than showing one
+    that is wrong. Same for a table that will not reconcile with the published week
+    boundary: the numbers all hang off which weeks are still open.
+    """
+    settings = league.get("settings") or {}
+    table = standings(rosters)
+    final_week = regular_season_end(settings)
+    weeks = undecided_weeks(settings, final_week=final_week)
+    spots = to_int(settings.get("playoff_teams")) or 0
+
+    blocked = unsupported(settings)
+    if blocked is None and not spots:
+        blocked = "this league publishes no playoff size, so there is no cut line to count to"
+    if blocked is None and not reconciles(settings, played=max((s.played for s in table), default=0)):
+        blocked = ("Sleeper's last-scored week does not square with the games in the table, "
+                   "so which weeks are still open cannot be pinned down")
+    if blocked is not None:
+        return PlayoffPicture(spots=spots, final_week=final_week, weeks_left=weeks,
+                              games_left=0, trials=0, notes=(blocked,))
+    return build_picture(table=table, remaining=games(schedule, weeks), spots=spots,
+                         final_week=final_week, weeks_left=weeks)
 
 
 def _notes(seats: Sequence[TeamSeat]) -> tuple[str, ...]:

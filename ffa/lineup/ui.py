@@ -13,6 +13,7 @@ from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
 
+from ..playoffs import TeamOutlook
 from ..waivers.status import FREE_AGENT, WAIVERS
 from .advice import AddCandidate, LineupAdvice, PlayerLine
 from .league import LeagueView, TeamCard
@@ -216,9 +217,93 @@ def league_render(view: LeagueView) -> RenderableType:
         Text.assemble((view.league_name, "bold"), f" · week {view.week} · every lineup as set"),
         Text(),
     ]
+    if view.playoffs is not None:
+        parts += [playoffs_table(view), Text()]
     for card in view.teams:
         parts += [team_table(card), team_header(card), Text()]
     return Group(*parts)
+
+
+def playoffs_table(view: LeagueView) -> RenderableType:
+    """The race: what each team needs, and what the coin flips say about it."""
+    picture = view.playoffs
+    if picture is None:
+        return Text()
+    weeks = len(picture.weeks_left)
+    title = (f"Playoff race — {picture.spots} of {len(view.teams)} make it, "
+             f"{weeks} week{'s' if weeks != 1 else ''} left through week {picture.final_week}")
+    if not picture.teams:
+        return Group(Text(title, style="bold"),
+                     Text("  " + "; ".join(picture.notes), style="yellow"))
+
+    names = {card.roster_id: card.name for card in view.teams}
+    mine = {card.roster_id for card in view.teams if card.is_mine}
+    grid = Table(show_edge=False, pad_edge=False, title=title, title_justify="left")
+    grid.add_column("#", justify="right")
+    grid.add_column("Team")
+    grid.add_column("Rec")
+    grid.add_column("Needs", justify="right")
+    grid.add_column("Odds", justify="right")
+    grid.add_column("Why", style="dim")
+    for outlook in picture.teams:
+        name = names.get(outlook.roster_id, f"Roster {outlook.roster_id}")
+        label = Text(name, style="bold" if outlook.roster_id in mine else "")
+        cut = outlook.seed <= picture.spots
+        grid.add_row(
+            Text(str(outlook.seed), style="green" if cut else "dim"),
+            label,
+            outlook.standing.label,
+            _needs_text(outlook),
+            _odds_text(outlook),
+            _outlook_why(outlook),
+        )
+    footer = Text(
+        "Needs = wins that clinch a place whatever else happens.  "
+        "Odds = if every game left were a coin flip.",
+        style="dim",
+    )
+    parts: list[RenderableType] = [grid, footer]
+    if picture.notes:
+        parts.append(Text("; ".join(picture.notes), style="yellow"))
+    return Group(*parts)
+
+
+def _needs_text(outlook: TeamOutlook) -> Text:
+    if outlook.eliminated:
+        return Text("out", style="red")
+    if outlook.clinched:
+        return Text("in", style="bold green")
+    if outlook.wins_to_clinch is None:
+        return Text("—", style="dim")
+    return Text(f"{outlook.wins_to_clinch} of {outlook.games_left}")
+
+
+def _odds_text(outlook: TeamOutlook) -> Text:
+    if outlook.odds >= 0.995:
+        return Text("~100%", style="green")
+    if 0 < outlook.odds < 0.005:
+        return Text("<1%", style="red")
+    style = "green" if outlook.odds >= 0.5 else ("red" if outlook.odds < 0.1 else "")
+    return Text(f"{outlook.odds * 100:.0f}%", style=style)
+
+
+def _outlook_why(outlook: TeamOutlook) -> str:
+    """The part a win total cannot say on its own.
+
+    The dash is the case worth words. A team can be short of any number that clinches and
+    still be well alive: three 3-5 teams in the `.env` league win out to the same eight
+    wins, and only the one that plays the other two clinches by doing it, because beating
+    them is what stops them matching it. Nothing about a win total alone can say that.
+    """
+    if outlook.eliminated:
+        return "out of reach"
+    if outlook.clinched:
+        return "through already"
+    if outlook.wins_to_clinch is None:
+        return f"alive at {outlook.wins_to_survive}, no total certain"
+    if outlook.wins_to_survive:
+        return f"alive at {outlook.wins_to_survive}"
+    return ""
 
 
 def _team_line_json(line: PlayerLine | None) -> dict[str, Any] | None:
@@ -238,6 +323,46 @@ def _team_line_json(line: PlayerLine | None) -> dict[str, Any] | None:
         "locked": line.locked,
         "reasons": list(line.reasons),
         "on_bye": bool(projection is not None and projection.on_bye),
+    }
+
+
+def playoffs_json(view: LeagueView) -> dict[str, Any] | None:
+    """The race for the phone. Names are joined here so `playoffs.py` stays pure maths."""
+    picture = view.playoffs
+    if picture is None:
+        return None
+    names = {card.roster_id: (card.name, card.manager, card.is_mine) for card in view.teams}
+    return {
+        "spots": picture.spots,
+        "final_week": picture.final_week,
+        "weeks_left": list(picture.weeks_left),
+        "games_left": picture.games_left,
+        "trials": picture.trials,
+        "notes": list(picture.notes),
+        "teams": [
+            {
+                "roster_id": outlook.roster_id,
+                "name": names.get(outlook.roster_id, (f"Roster {outlook.roster_id}", None, False))[0],
+                "manager": names.get(outlook.roster_id, (None, None, False))[1],
+                "mine": names.get(outlook.roster_id, (None, None, False))[2],
+                "seed": outlook.seed,
+                "record": outlook.standing.label,
+                "wins": outlook.standing.wins,
+                "losses": outlook.standing.losses,
+                "ties": outlook.standing.ties,
+                "points_for": round(outlook.standing.points_for, 2),
+                "games_left": outlook.games_left,
+                "needs": outlook.summary,
+                "wins_to_clinch": outlook.wins_to_clinch,
+                "wins_to_survive": outlook.wins_to_survive,
+                "clinched": outlook.clinched,
+                "eliminated": outlook.eliminated,
+                "in_places": outlook.seed <= picture.spots,
+                "odds": round(outlook.odds, 4),
+                "why": _outlook_why(outlook),
+            }
+            for outlook in picture.teams
+        ],
     }
 
 

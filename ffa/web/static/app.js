@@ -828,7 +828,66 @@ function chosenTeam(data) {
   return picked || teams.find((t) => t.opponent) || teams.find((t) => !t.mine) || teams[0];
 }
 
+// The race for the whole league. The two numbers answer different questions and are kept
+// visibly apart: "needs" is arithmetic that holds whatever happens, "odds" is a coin flip.
+function renderPlayoffs(data) {
+  const race = (data || {}).playoffs;
+  const card = $("#playoff-card");
+  show(card, !!race);
+  if (!race) return;
+  const weeks = (race.weeks_left || []).length;
+  $("#playoff-sub").textContent = race.teams.length
+    ? `${race.spots} of ${race.teams.length} · ${weeks} week${weeks === 1 ? "" : "s"} left`
+    : "";
+  const rows = clear($("#playoff-rows"));
+  if (!race.teams.length) {
+    rows.append(el("div", "wline warn-text", (race.notes || []).join("; ")));
+    $("#playoff-foot").textContent = "";
+    return;
+  }
+  // A header row, because two bare numbers in a row need saying which is which before
+  // the footnote gets a chance to.
+  const head = el("div", "lrow race-row head");
+  head.append(el("div", "seed", "#"));
+  const heading = el("div", "lmain");
+  heading.append(el("span", "name", "Team"));
+  head.append(heading);
+  head.append(el("div", "needs", "Needs"));
+  head.append(el("div", "odds", "Odds"));
+  rows.append(head);
+  race.teams.forEach((team) => {
+    const row = el("div", "lrow race-row");
+    if (team.in_places) row.classList.add("inside");
+    if (team.mine) row.classList.add("mine");
+    row.append(el("div", "seed", team.seed));
+    const main = el("div", "lmain");
+    main.append(el("span", "name", team.name));
+    main.append(el("span", "rec", team.record));
+    row.append(main);
+    row.append(el("div", "needs" + needsStyle(team), team.needs));
+    row.append(el("div", "odds", oddsLabel(team.odds)));
+    if (team.why) row.append(el("div", "lwhy", team.why));
+    rows.append(row);
+  });
+  $("#playoff-foot").textContent =
+    "Needs = wins that clinch a place whatever else happens. "
+    + "Odds = if every game left were a coin flip.";
+}
+
+function needsStyle(team) {
+  if (team.eliminated) return " bad";
+  if (team.clinched) return " good";
+  return "";
+}
+
+function oddsLabel(odds) {
+  if (odds >= 0.995) return "~100%";
+  if (odds > 0 && odds < 0.005) return "<1%";
+  return `${Math.round(odds * 100)}%`;
+}
+
 function renderLeague(data) {
+  renderPlayoffs(data);
   const teams = teamsOf(data);
   const bar = $("#team-chips");
   show(bar, teams.length > 1);

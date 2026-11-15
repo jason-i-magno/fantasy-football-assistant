@@ -347,6 +347,7 @@ def cmd_lineup(args, console: Console) -> int:
     if args.json:
         payload = lineup_ui.advice_json(advice, sources)
         payload["teams"] = lineup_ui.league_json(view)
+        payload["playoffs"] = lineup_ui.playoffs_json(view)
         print(json.dumps(payload, indent=2))
     elif args.teams:
         console.print(lineup_ui.league_render(view))
