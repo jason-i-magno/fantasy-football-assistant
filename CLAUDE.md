@@ -179,6 +179,19 @@ League tab and `ffa lineup --teams` draw the same numbers.
   whatever else happens. `odds` is a coin-flip simulation. They disagree constantly -- an
   8-0 team needs one win to be *certain* and is at ~100% without it -- and conflating them
   would make the honest number look wrong. Both are labelled wherever they are drawn.
+- **Every win total, not just the one that clinches.** `TeamOutlook.by_wins` is the same
+  simulation read a row at a time: of the trials where a team won exactly k of its own
+  games, how many ended with a place. One pass over the teams per trial splits it, so it is
+  the same sample as the headline and the two cannot disagree about a league. Three things
+  keep it honest. The ends are filled in from the flow rather than counted, so the first
+  total the row calls certain *is* `wins_to_clinch` and nothing below `wins_to_survive`
+  carries a chance. A total the sampler never saw miss is still not a guarantee -- the
+  simulation breaks ties on points-for as they stand, the clinch assumes them lost -- so it
+  is drawn `~100` and only an arithmetic certainty is drawn `100`. And the buckets are
+  uneven: five games left splits ten thousand trials 312/1562/3125/3125/1562/312, which is
+  the right way round, because the thin ends are the totals the arithmetic answers outright.
+  The row is monotone (an extra win also denies a rival one), and a dip on screen is noise,
+  so `test_more_wins_never_lower_the_odds` sweeps seeded leagues for one.
 - **Tiebreaks stay out of the guaranteed numbers.** A clinch assumes every team level with
   you wins the tiebreak, an elimination assumes you do. That is what makes the number a
   guarantee: the tiebreak is points-for, and those points have not been scored yet. The
@@ -218,7 +231,8 @@ League tab and `ffa lineup --teams` draw the same numbers.
 package, like `draft/prompts/research.md`). Four tabs: Lineup (the default), League,
 Waivers, Draft. Lineup and League are drawn from one `/api/lineup` response, so opening the
 second costs nothing and cannot show a number the first disagrees with. The League tab leads
-with the playoff race for the whole league, then a picker for one team's lineup.
+with the playoff race for the whole league -- what each team needs, and a grid of every
+team's odds at every win total still open to it -- then a picker for one team's lineup.
 
 - Nothing fantasy-related lives in the browser. `payload.py` renders the same `DraftView`
   `ui.py` draws, so a fix to the pipeline reaches both surfaces at once. If the UI needs a
@@ -235,6 +249,11 @@ with the playoff race for the whole league, then a picker for one team's lineup.
 - The league picker is one control in the header, shared by the lineup and waivers tabs,
   because two controls for one choice is one of them being wrong. It is hidden on the draft
   tab, which follows `DRAFT_ID` instead.
+- The by-wins grid sets its own `grid-template-columns` from JS, because the column count is
+  the number of games left. Track widths there are in pixels: an `em` resolves against the
+  row's font size, not the cells', which at a phone's width cost the team column fifty
+  pixels and most of a name. Names are `nowrap` so the inherited ellipsis fires, and the
+  grid sits in a `.scrollx` for the fifteen columns week one would want.
 - `show()` toggles the `hidden` *attribute*, and an author `display` rule outranks the user
   agent's `[hidden] { display: none }` — a flex or grid element would stay visible. There is
   now an explicit `[hidden]` rule in `styles.css`; don't remove it.

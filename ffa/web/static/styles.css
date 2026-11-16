@@ -350,6 +350,26 @@ details summary { font-size: 13px; color: var(--muted); cursor: pointer; margin:
 /* Dimmer than the number it sits beside: it is the softer of the two claims. */
 .race-row .odds { font-variant-numeric: tabular-nums; color: var(--muted); min-width: 3.5em;
                   text-align: right; }
+/* The by-wins grid. Its column count is the number of games left, so the template is set
+   from JS; fifteen columns in week one would overflow a phone, hence the scroller. */
+.scrollx { overflow-x: auto; }
+.odds-row { gap: 2px 5px; align-items: baseline; }
+.odds-row .seed { font-variant-numeric: tabular-nums; color: var(--muted); text-align: right;
+                  font-size: 11px; }
+.odds-row.inside .seed { color: var(--green); font-weight: 600; }
+/* One line each. Without `nowrap` the inherited ellipsis never fires on a name with a
+   space in it, and six rows of three-line names push the whole grid off the screen. */
+.odds-row .name { font-weight: 500; font-size: 12px; white-space: nowrap; }
+.odds-row.mine .name { font-weight: 700; }
+.odds-row .cell { font-variant-numeric: tabular-nums; font-size: 11px; text-align: right; }
+/* Certainty is arithmetic and reads as the firmest thing in the grid; a sampled 100% is
+   not the same claim and keeps both its tilde and the ordinary weight. */
+.odds-row .cell.sure { color: var(--green); font-weight: 700; }
+.odds-row .cell.high { color: var(--green); }
+.odds-row .cell.low, .odds-row .cell.out { color: var(--muted); }
+.odds-row.head .cell, .odds-row.head .name { color: var(--muted); font-size: 11px;
+                                             font-weight: 600; }
+
 .race-row.head { color: var(--muted); font-size: 11px; text-transform: uppercase;
                  letter-spacing: 0.04em; padding-top: 0; }
 .race-row.head .name, .race-row.head .needs { font-weight: 600; color: var(--muted); }

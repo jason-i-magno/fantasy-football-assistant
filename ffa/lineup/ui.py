@@ -5,7 +5,7 @@ browser never does fantasy arithmetic of its own -- the same contract the draft 
 tabs follow.
 """
 
-from collections.abc import Sequence
+from collections.abc import Container, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -13,7 +13,7 @@ from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
 
-from ..playoffs import TeamOutlook
+from ..playoffs import PlayoffPicture, TeamOutlook, WinOdds
 from ..waivers.status import FREE_AGENT, WAIVERS
 from .advice import AddCandidate, LineupAdvice, PlayerLine
 from .league import LeagueView, TeamCard
@@ -262,10 +262,68 @@ def playoffs_table(view: LeagueView) -> RenderableType:
         "Odds = if every game left were a coin flip.",
         style="dim",
     )
-    parts: list[RenderableType] = [grid, footer]
+    parts: list[RenderableType] = [grid, footer, Text(), by_wins_table(picture, names, mine)]
     if picture.notes:
         parts.append(Text("; ".join(picture.notes), style="yellow"))
     return Group(*parts)
+
+
+def by_wins_table(picture: PlayoffPicture, names: Mapping[int, str],
+                  mine: Container[int]) -> RenderableType:
+    """Every win total still open to each team, and what the coin flips did with it.
+
+    The column a row first turns green is its clinch number, which is the one place the
+    guaranteed figure and the simulation are drawn as one thing. They are not the same
+    claim even where they agree: a total the sampler never saw miss reads `~100`, and only
+    a total that cannot miss reads a flat `100`, because ten thousand coin-flip seasons
+    are not a proof and the tilde is where that is said.
+    """
+    width = max((len(outlook.by_wins) for outlook in picture.teams), default=0)
+    if width <= 1:  # nothing left to play: the race table has said everything
+        return Text()
+    grid = Table(show_edge=False, pad_edge=False, title_justify="left",
+                 title="Odds by wins from here — how often this many wins is enough")
+    grid.add_column("#", justify="right")
+    grid.add_column("Team")
+    grid.add_column("Rec")
+    for wins in range(width):
+        grid.add_column(f"+{wins}", justify="right")
+    for outlook in picture.teams:
+        name = names.get(outlook.roster_id, f"Roster {outlook.roster_id}")
+        cells = [_odds_cell(row) for row in outlook.by_wins]
+        cells += [Text("")] * (width - len(cells))  # a team with fewer games left
+        grid.add_row(
+            Text(str(outlook.seed), style="green" if outlook.seed <= picture.spots else "dim"),
+            Text(name, style="bold" if outlook.roster_id in mine else ""),
+            outlook.standing.label,
+            *cells,
+        )
+    return Group(grid, Text(
+        "Columns are wins from here, so +0 is losing out.  "
+        "100 = certain, ~100 = never seen to miss, – = not enough whatever else happens.",
+        style="dim",
+    ))
+
+
+def _odds_cell(row: WinOdds) -> Text:
+    """One cell, in a column three characters wide.
+
+    `–` and `100` are arithmetic; everything else is a count of simulated seasons, and the
+    two are never written the same way. `<1` is a total the sampler never got in on, which
+    is not the same as one it cannot: that is the dash.
+    """
+    if row.impossible:
+        return Text("–", style="dim")
+    if row.certain:
+        return Text("100", style="bold green")
+    if row.odds is None:
+        return Text("·", style="dim")  # too rare a total to have been sampled at all
+    if row.odds >= 0.995:
+        return Text("~100", style="green")
+    if row.odds < 0.005:
+        return Text("<1", style="dim")
+    return Text(f"{row.odds * 100:.0f}", style="green" if row.odds >= 0.5 else
+                ("dim" if row.odds < 0.1 else ""))
 
 
 def _needs_text(outlook: TeamOutlook) -> Text:
@@ -359,6 +417,17 @@ def playoffs_json(view: LeagueView) -> dict[str, Any] | None:
                 "eliminated": outlook.eliminated,
                 "in_places": outlook.seed <= picture.spots,
                 "odds": round(outlook.odds, 4),
+                "by_wins": [
+                    {
+                        "wins": row.wins,
+                        "record": row.label,
+                        "odds": None if row.odds is None else round(row.odds, 4),
+                        "trials": row.trials,
+                        "certain": row.certain,
+                        "impossible": row.impossible,
+                    }
+                    for row in outlook.by_wins
+                ],
                 "why": _outlook_why(outlook),
             }
             for outlook in picture.teams

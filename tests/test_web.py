@@ -505,6 +505,12 @@ def test_lineup_payload_carries_the_whole_screen(recording):
     assert chaser["wins_to_survive"] == 2 and chaser["wins_to_clinch"] is None
     assert chaser["needs"] == "—" and chaser["eliminated"] is False
     assert 0.0 <= chaser["odds"] <= 1.0
+    # And the whole row, so the phone draws every win total still open without arithmetic
+    # of its own: the final win column, and which ends the flow settled rather than sampled.
+    assert [cell["wins"] for cell in leader["by_wins"]] == [0, 1, 2]
+    assert [cell["record"] for cell in leader["by_wins"]] == ["5", "6", "7"]
+    assert [cell["certain"] for cell in leader["by_wins"]] == [False, True, True]
+    assert [cell["impossible"] for cell in chaser["by_wins"]] == [True, True, False]
 
 
 def test_one_build_serves_every_screen(recording):

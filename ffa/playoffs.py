@@ -26,6 +26,15 @@ guaranteed number cannot -- whether two wins is probably enough -- without inven
 model of team strength to do it. Ties on record are broken by points-for as they stand,
 which future scoring will move.
 
+**The odds for each win total** are the same simulation, read a row at a time: of the
+trials where a team won exactly k of its own remaining games, how many ended with a place.
+That is the question a single percentage cannot answer -- not "will I make it" but "is
+three enough" -- and it is where the two numbers meet, because the row reaches a certain
+100% at exactly `wins_to_clinch` and is 0% below `wins_to_survive`. Those two ends are
+filled in from the arithmetic rather than counted, since a bucket the sampler visited three
+hundred times cannot be trusted to the whole percent it is drawn to, and the arithmetic is
+exact.
+
 Not every league shape is modelled. A league that plays the weekly median
 (`league_average_match`) awards a second result per week, and one with divisions seeds
 division winners first; both would make these numbers wrong rather than approximate, so
@@ -75,6 +84,29 @@ class Standing:
 
 
 @dataclass(frozen=True, slots=True)
+class WinOdds:
+    """What one win total from here is worth to one team.
+
+    `odds` is None only when nothing can answer: the arithmetic is silent and the sampler
+    never drew this total. With fourteen games left the extreme totals are rarer than one
+    trial in ten thousand, and a blank is the honest rendering of a bucket nobody sampled.
+    """
+
+    wins: int  # wins from here, 0..games_left
+    record: float  # the record it finishes on, a tie still counting half
+    odds: float | None  # 0..1, on coin flips, unless `certain` or `impossible`
+    trials: int  # trials behind `odds`; 0 when the arithmetic answered instead
+    certain: bool  # this total takes a place whatever else happens
+    impossible: bool  # this total misses whatever else happens
+
+    @property
+    def label(self) -> str:
+        """The final win column, which is what a manager counts in."""
+        whole = int(self.record)
+        return str(whole) if self.record == whole else f"{self.record:.1f}"
+
+
+@dataclass(frozen=True, slots=True)
 class TeamOutlook:
     """What one roster is still playing for."""
 
@@ -85,6 +117,7 @@ class TeamOutlook:
     wins_to_clinch: int | None  # None when no win total guarantees a place
     wins_to_survive: int | None  # fewest wins leaving any path at all; None when out
     odds: float  # 0..1, on coin flips
+    by_wins: tuple[WinOdds, ...] = ()  # one row per win total still open to it
 
     @property
     def clinched(self) -> bool:
@@ -244,7 +277,7 @@ def build_picture(
     record = {s.roster_id: s.record for s in table}
     points = {s.roster_id: s.points_for for s in table}
     spots = max(0, min(spots, len(table)))
-    chances = _odds(record, points, remaining, spots, trials)
+    chances, buckets = _odds(record, points, remaining, spots, trials)
 
     outlooks: list[TeamOutlook] = []
     for seed, standing in enumerate(table, start=1):
@@ -258,12 +291,52 @@ def build_picture(
             roster_id=team, standing=standing, seed=seed, games_left=own,
             wins_to_clinch=clinch, wins_to_survive=survive,
             odds=chances.get(team, 0.0),
+            by_wins=_by_wins(standing, own, clinch, survive, buckets.get(team, ())),
         ))
     return PlayoffPicture(
         spots=spots, final_week=final_week, weeks_left=tuple(weeks_left),
         games_left=len(remaining), trials=trials,
         teams=tuple(outlooks), notes=tuple(notes),
     )
+
+
+def _by_wins(
+    standing: Standing,
+    games_left: int,
+    clinch: int | None,
+    survive: int | None,
+    counts: Sequence[tuple[int, int]],
+) -> tuple[WinOdds, ...]:
+    """One row per win total: certain, impossible, or what the coin flips made of it.
+
+    The arithmetic goes first wherever it has an answer, because it is exact and the
+    sampler is not. It also keeps this row and the clinch number from contradicting each
+    other on screen: the smallest total shown as a certainty is `wins_to_clinch`, by
+    construction rather than by luck, and no total below `wins_to_survive` is shown with a
+    chance the sampler happened to find.
+
+    The sampled middle is where the two differ for good reason. The clinch number assumes
+    every tiebreak lost and the survival number assumes every one won; the simulation
+    breaks ties on points-for as they stand. So a total can be sampled at 100% and still
+    not be `certain` -- which is the honest answer, and why the renderers mark certainty
+    rather than reading it off the percentage.
+    """
+    rows: list[WinOdds] = []
+    for wins in range(games_left + 1):
+        certain = clinch is not None and wins >= clinch
+        impossible = survive is None or wins < survive
+        made, played = counts[wins] if wins < len(counts) else (0, 0)
+        if certain:
+            odds, played = 1.0, 0
+        elif impossible:
+            odds, played = 0.0, 0
+        else:
+            odds = made / played if played else None
+        rows.append(WinOdds(
+            wins=wins, record=standing.record + wins, odds=odds,
+            trials=played, certain=certain, impossible=impossible,
+        ))
+    return tuple(rows)
 
 
 def _first_true(low: int, high: int, predicate) -> int | None:
@@ -474,8 +547,13 @@ def _odds(
     remaining: Sequence[Game],
     spots: int,
     trials: int,
-) -> dict[int, float]:
+) -> tuple[dict[int, float], dict[int, tuple[tuple[int, int], ...]]]:
     """How often each roster makes the playoffs with every remaining game a coin flip.
+
+    Returns the chance for each roster, and the same trials split by how many of its own
+    games it won: `(made, played)` per win total, which is the conditional the by-wins row
+    is read off. Splitting them costs one pass over the teams per trial and no extra
+    trials, and it is the same sample, so the two figures cannot disagree about a league.
 
     Not a forecast, and labelled as such wherever it is shown: a coin flip says the worst
     team in the league is as likely to win on Sunday as the best. What it does give is the
@@ -484,25 +562,44 @@ def _odds(
     dressed as a projection.
 
     One `getrandbits` call settles a whole week of fixtures, and the seed is fixed, so the
-    same table produces the same percentages every time it is drawn.
+    same table produces the same percentages every time it is drawn. A team's own wins come
+    out of that same draw in one operation: `want` holds the bits that mean this roster
+    won, so where the draw agrees with it inside `mask`, it won, and the agreements are
+    counted with `bit_count`.
+
+    The split buckets are not evenly filled -- five games left divides ten thousand trials
+    into 312, 1562, 3125, 3125, 1562 and 312 -- so the noise is worst at the extreme
+    totals. That is the opposite of a problem: those are the totals the arithmetic in
+    `_by_wins` answers outright, and the thinly sampled ones left over are those where
+    winning out or losing out is neither certain nor impossible.
     """
     teams = sorted(record)
     if not teams or spots <= 0:
-        return dict.fromkeys(teams, 0.0)
+        return dict.fromkeys(teams, 0.0), {}
     if spots >= len(teams):
-        return dict.fromkeys(teams, 1.0)
+        return dict.fromkeys(teams, 1.0), {}
     index = {team: offset for offset, team in enumerate(teams)}
     base = [record[t] for t in teams]
     tiebreak = [points.get(t, 0.0) for t in teams]
     pairs = [(index[a], index[b]) for a, b in remaining if a in index and b in index]
     if not pairs:
         ranked = sorted(range(len(teams)), key=lambda i: (-base[i], -tiebreak[i]))
-        return {teams[i]: 1.0 if place < spots else 0.0
-                for place, i in enumerate(ranked)}
+        return ({teams[i]: 1.0 if place < spots else 0.0
+                 for place, i in enumerate(ranked)}, {})
 
     rng = random.Random(ODDS_SEED)
     width = len(pairs)
     made = [0] * len(teams)
+    mask = [0] * len(teams)
+    want = [0] * len(teams)
+    for offset, (first, second) in enumerate(pairs):
+        bit = 1 << offset
+        mask[first] |= bit
+        mask[second] |= bit
+        want[first] |= bit  # a set bit is the first roster of the pair winning
+    own = [bits.bit_count() for bits in mask]
+    hits = [[0] * (count + 1) for count in own]
+    seen = [[0] * (count + 1) for count in own]
     trials = max(1, trials)
     for _ in range(trials):
         tally = base.copy()
@@ -510,6 +607,11 @@ def _odds(
         for offset, (first, second) in enumerate(pairs):
             tally[first if (draw >> offset) & 1 else second] += 1.0
         order = sorted(range(len(teams)), key=lambda i: (-tally[i], -tiebreak[i]))
+        wins = [(~(draw ^ want[i]) & mask[i]).bit_count() for i in range(len(teams))]
+        for i, count in enumerate(wins):
+            seen[i][count] += 1
         for i in order[:spots]:
             made[i] += 1
-    return {team: made[index[team]] / trials for team in teams}
+            hits[i][wins[i]] += 1
+    return ({team: made[index[team]] / trials for team in teams},
+            {team: tuple(zip(hits[index[team]], seen[index[team]])) for team in teams})

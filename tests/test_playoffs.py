@@ -242,6 +242,175 @@ def test_with_a_place_for_everyone_nobody_needs_a_win():
     assert all(t.clinched and t.odds == 1.0 for t in picture.teams)
 
 
+# -- the odds for each win total -------------------------------------------------------
+
+
+def test_each_win_total_gets_a_row_with_the_record_it_finishes_on():
+    standings = table((5, 3), (4, 4), (4, 4), (3, 5))
+    remaining = ((1, 2), (3, 4), (1, 3), (2, 4))
+    picture = P.build_picture(table=standings, remaining=remaining, spots=2, final_week=14)
+    for outlook in picture.teams:
+        rows = outlook.by_wins
+        assert [r.wins for r in rows] == list(range(outlook.games_left + 1))
+        assert [r.label for r in rows] == [
+            str(outlook.standing.wins + k) for k in range(outlook.games_left + 1)
+        ], "the column a manager counts in is the final one, not the gain"
+
+
+def test_the_row_turns_certain_at_the_clinch_number():
+    """The one invariant tying the two figures together.
+
+    The by-wins row and the clinch number are different instruments -- bisected flow on
+    one side, counted coin flips on the other -- and the row is where they are drawn side
+    by side. So the first total the row calls certain has to be the clinch number itself,
+    and nothing below the survival number may carry a chance at all, by construction
+    rather than by luck.
+    """
+    records = [(7, 2), (5, 4), (5, 4), (5, 4), (4, 5), (4, 5), (3, 6), (0, 9)]
+    standings = table(*records)
+    ids = [s.roster_id for s in standings]
+    remaining = tuple((ids[i], ids[i + 1]) for i in range(0, 8, 2)) + \
+                tuple((ids[i], ids[(i + 3) % 8]) for i in range(0, 8, 2)) + \
+                tuple((ids[i], ids[(i + 5) % 8]) for i in range(0, 8, 2))
+    picture = P.build_picture(table=standings, remaining=remaining, spots=4, final_week=14)
+    for outlook in picture.teams:
+        certain = [r.wins for r in outlook.by_wins if r.certain]
+        possible = [r.wins for r in outlook.by_wins if not r.impossible]
+        assert (certain[0] if certain else None) == outlook.wins_to_clinch
+        assert (possible[0] if possible else None) == outlook.wins_to_survive
+        assert all(r.odds == 1.0 and r.trials == 0 for r in outlook.by_wins if r.certain)
+        assert all(r.odds == 0.0 and r.trials == 0 for r in outlook.by_wins if r.impossible)
+
+
+def test_a_certain_total_is_not_the_same_claim_as_one_sampled_at_a_hundred():
+    """A total the coin flips never saw miss still is not a guarantee.
+
+    One place short of a clinch, the simulation breaks the tie on points scored so far and
+    the leader wins it every time, so the total samples at a flat 100% while the
+    arithmetic -- which assumes the tiebreak lost, because those points are not yet
+    scored -- says it can still miss. Both numbers are right about different questions,
+    which is why the renderers mark certainty instead of reading it off the percentage.
+    """
+    standings = table((5, 1), (4, 2), (4, 2), (1, 5))  # roster 1 leads on points too
+    picture = P.build_picture(table=standings, remaining=((2, 3), (1, 4)), spots=1,
+                              final_week=14)
+    leader = picture.team(1)
+    assert leader.wins_to_clinch == 1, "level on 5 wins, the tiebreak is assumed lost"
+    losing = leader.by_wins[0]
+    assert losing.odds == 1.0 and losing.trials > 0 and not losing.certain
+    assert leader.by_wins[1].certain and leader.by_wins[1].trials == 0
+
+
+def test_the_odds_for_each_win_total_match_exhaustive_enumeration():
+    """The oracle again, for the conditional: every outcome, split by the team's own wins.
+
+    The sampler's answer is `made / played` inside one bucket, so this is the check that
+    the bucket is the right bucket -- that the win count pulled out of the draw by bit
+    arithmetic is the same count the outcome actually had.
+    """
+    rng = random.Random(4)
+    for _ in range(18):
+        size = rng.choice([4, 6])
+        standings = table(*[(rng.randint(0, 3), rng.randint(0, 3)) for _ in range(size)])
+        ids = [s.roster_id for s in standings]
+        remaining = []
+        for _ in range(rng.randint(2, 3)):
+            order = ids[:]
+            rng.shuffle(order)
+            remaining += [(order[i], order[i + 1]) for i in range(0, size, 2)]
+        remaining = tuple(remaining)
+        spots = rng.randint(1, size - 1)
+        picture = P.build_picture(table=standings, remaining=remaining, spots=spots,
+                                 final_week=14, trials=12_000)
+        exact = _enumerate_by_wins(standings, remaining, spots)
+        for outlook in picture.teams:
+            for row in outlook.by_wins:
+                if row.certain or row.impossible or row.odds is None:
+                    continue
+                want = exact[outlook.roster_id][row.wins]
+                # Four standard errors of the bucket's own size: the thin buckets at the
+                # ends of a row are sampled a hundredth as often as the middle ones.
+                slack = 4 * (want * (1 - want) / row.trials) ** 0.5 + 0.01
+                assert abs(row.odds - want) <= slack, (
+                    f"roster {outlook.roster_id} at +{row.wins}: {row.odds} vs {want} "
+                    f"over {remaining}, {spots} spots"
+                )
+
+
+def _enumerate_by_wins(standings, remaining, spots):
+    """P(make | exactly k own wins), by hand, with the simulation's own tiebreak."""
+    ids = [s.roster_id for s in standings]
+    record = {s.roster_id: s.record for s in standings}
+    points = {s.roster_id: s.points_for for s in standings}
+    out = {}
+    for team in ids:
+        own = [i for i, game in enumerate(remaining) if team in game]
+        made = [0] * (len(own) + 1)
+        seen = [0] * (len(own) + 1)
+        for mask in range(1 << len(remaining)):
+            final = dict(record)
+            for index, (first, second) in enumerate(remaining):
+                final[first if (mask >> index) & 1 else second] += 1.0
+            won = sum(1 for i in own if (remaining[i][0] == team) == bool((mask >> i) & 1))
+            order = sorted(ids, key=lambda t: (-final[t], -points[t]))
+            seen[won] += 1
+            if team in order[:spots]:
+                made[won] += 1
+        out[team] = [m / s for m, s in zip(made, seen)]
+    return out
+
+
+def test_more_wins_never_lower_the_odds():
+    """Winning one more of your own games raises your record and denies a rival one, so it
+    cannot cost you a place. The conditional is therefore monotone, and a row that dips on
+    screen is a bug however small the dip. Both the leagues and the sampler are seeded, so
+    this either holds or it does not."""
+    rng = random.Random(11)
+    for _ in range(25):
+        size = rng.choice([8, 10, 12])
+        standings = table(*[(rng.randint(0, 8), 0) for _ in range(size)])
+        ids = [s.roster_id for s in standings]
+        remaining = []
+        for _ in range(rng.randint(3, 6)):
+            order = ids[:]
+            rng.shuffle(order)
+            remaining += [(order[i], order[i + 1]) for i in range(0, size, 2)]
+        # Fewer trials than the real figure uses: thinner buckets are noisier, and noise
+        # is the only thing that can break a monotone quantity.
+        picture = P.build_picture(table=standings, remaining=tuple(remaining),
+                                  spots=size // 2, final_week=14, trials=4_000)
+        for outlook in picture.teams:
+            drawn = [r.odds for r in outlook.by_wins if r.odds is not None]
+            assert drawn == sorted(drawn), f"roster {outlook.roster_id}: {drawn}"
+
+
+def test_a_total_too_rare_to_have_been_sampled_is_left_blank():
+    """With fourteen games left, losing out is rarer than one trial in ten thousand. A
+    bucket nobody drew is a blank, not a zero and not the overall figure."""
+    standings = table((3, 2), (3, 2), (3, 2), (2, 3), (2, 3), (2, 3))
+    remaining = ((1, 2), (3, 4), (5, 6), (1, 3), (2, 5), (4, 6), (1, 4), (2, 6), (3, 5))
+    picture = P.build_picture(table=standings, remaining=remaining, spots=3,
+                              final_week=14, trials=3)
+    blanks = [r for t in picture.teams for r in t.by_wins if r.odds is None]
+    assert blanks, "three trials cannot have covered every win total"
+    assert all(r.trials == 0 and not r.certain and not r.impossible for r in blanks)
+
+
+def test_the_buckets_are_the_same_sample_as_the_headline_odds():
+    """One simulation, read two ways. The buckets partition the very trials the headline
+    percentage counts, which is what stops the breakdown and the summary disagreeing about
+    a league: every trial lands in exactly one bucket, and the ones that made the playoffs
+    land in the same bucket they were counted in."""
+    standings = table((5, 3), (4, 4), (4, 4), (3, 5), (3, 5), (2, 6))
+    remaining = ((1, 2), (3, 4), (5, 6), (1, 3), (2, 5), (4, 6))
+    record = {s.roster_id: s.record for s in standings}
+    points = {s.roster_id: s.points_for for s in standings}
+    chances, buckets = P._odds(record, points, remaining, 3, 1_000)
+    for team, rows in buckets.items():
+        assert sum(played for _, played in rows) == 1_000
+        assert sum(made for made, _ in rows) == pytest.approx(chances[team] * 1_000)
+
+
 # -- the league shapes that are refused rather than guessed ----------------------------
 
 
