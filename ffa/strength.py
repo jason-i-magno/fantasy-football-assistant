@@ -36,6 +36,17 @@ could measure.
 a season of stored projections to know which channel predicts better, and this tool stores
 none. Half each is the honest statement of not knowing, and it is a named constant so that
 changing it is a decision rather than an edit.
+
+Both terms are estimates of the same thing, so the blend is an average of two estimates and
+not a discount applied twice: the scoring term is shrunk because its own noise was measured,
+and the projected term is taken at face value because measurement says it needs no shrinking.
+In league A the projected edges spread 8.8 against a latent spread of 11.1 -- projections
+regress on their own, and arrive already conservative. Re-measure that before giving them
+more weight; a channel wider than the truth would need shrinking like any other.
+
+What `backtest` can check is the scoring channel alone. Nothing here stores what the
+projections said in week 3, so the roster channel is unvalidated by construction, and the
+reported skill belongs to the half of the model that can be replayed.
 """
 
 import math

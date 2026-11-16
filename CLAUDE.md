@@ -295,6 +295,12 @@ The second half is the whole module. Measured the same week on the two `.env` le
   The projections see exactly that and nothing else. `lineup/league.py` solves each roster's
   best lineup on the rest-of-season rate for the second channel, which is one more call to
   the same solver.
+- **The blend is an average of two estimates, not a discount applied twice.** The scoring
+  term is shrunk because its own noise was measured; the projected term is taken as it
+  comes, because measurement says it needs no shrinking -- in league A the projected edges
+  spread 8.8 against a latent spread of 11.1, projections being conservative on their own.
+  The two channels then contribute about equally (sd 4.7 and 4.4 of the 8.6 the model ends
+  up with). Re-measure that before giving the projections more weight.
 - **Both channels are centred before they are blended, so the level comes from the scores
   alone.** A projected *best* lineup is worth more than anyone scores, because every manager
   leaves something on his bench; centring cancels a bias no data here can measure.
@@ -306,7 +312,9 @@ The second half is the whole module. Measured the same week on the two `.env` le
   what makes `_split_scores` exact.
 - **`backtest` is the acceptance test and lives in the library, not in a notebook.** It
   replays the season, estimating from the weeks before each one, and scores the result
-  against the 0.25 of a coin flip. Run it on a real league before trusting any change here:
+  against the 0.25 of a coin flip. It validates the *scoring* channel only: nothing stores
+  what the projections said in week 3, so the roster channel cannot be replayed and its
+  weight rests on the measurement above rather than on a score. Run it on a real league before trusting any change here:
   on league A it scored 0.188 (25% of the coin flip's error removed, favourite winning 90%
   of 20 games); on league B it scored exactly 0.25, which is the estimator declining to
   guess and the right outcome there.
