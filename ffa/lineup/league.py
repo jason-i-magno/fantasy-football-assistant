@@ -30,6 +30,7 @@ from ..playoffs import (
 )
 from ..projections import Projection
 from ..roster import reserved, starting_slots
+from ..strength import Scoring, estimate
 from .advice import Horizon, PlayerLine, player_line
 from .optimal import best_lineup
 
@@ -131,12 +132,17 @@ def build_league_view(
     my_roster_id: int | None = None,
     horizon: Horizon | None = None,
     schedule: Mapping[int, Sequence[Mapping]] | None = None,
+    history: Mapping[int, Mapping[int, float]] | None = None,
 ) -> LeagueView:
     """Score every roster in the league for one week. Pure: nothing here fetches.
 
     `schedule` is the remaining regular-season weeks' matchups, which turn into the playoff
     race. Left out, the view is the lineups alone -- the race is the one thing here that
     needs weeks other than this one, so it is the one thing a caller can decline to pay for.
+
+    `history` is week -> roster -> points for the weeks already played. With it, the race's
+    odds are drawn from what the teams actually score instead of from coin flips; without
+    it they are coin flips, which is right in week one and wrong by week nine.
     """
     horizon = horizon or Horizon()
     slots = starting_slots(league.get("roster_positions") or ())
@@ -145,6 +151,7 @@ def build_league_view(
     by_roster = {to_int(m.get("roster_id")): m for m in matchups}
 
     cards: list[TeamCard] = []
+    projected: dict[int, float] = {}
     for roster in rosters:
         roster_id = to_int(roster.get("roster_id"))
         if roster_id is None:
@@ -174,14 +181,29 @@ def build_league_view(
         bench = tuple(sorted((l for pid, l in lines.items() if pid not in started),
                              key=lambda l: (-l.points, l.player.name)))
         total = sum(seat.line.points for seat in seats if seat.line is not None)
+        # His IR players are not his to field either, and counting them would charge him
+        # for leaving points on a bench they are not sitting on. One list, used by both
+        # solves: a second way of asking who is unavailable is a second answer waiting.
+        unavailable = [pid for pid, l in lines.items() if l.reserved]
         best = best_lineup(
             slots,
             {pid: l.points for pid, l in lines.items()},
             {pid: frozenset(l.player.fantasy_positions) for pid, l in lines.items()},
-            roster=set(lines),
-            # His IR players are not his to field either, and counting them would charge
-            # him for leaving points on a bench they are not sitting on.
-            unavailable=[pid for pid, l in lines.items() if l.reserved],
+            roster=set(lines), unavailable=unavailable,
+        ).total
+
+        # What this roster is worth in an average week still to come, for the playoff
+        # odds: the same solver, run on the rest-of-season rate instead of this Sunday.
+        # It is the half of a team's strength that its scoring record cannot see -- a
+        # roster that has just lost its best back still has his points in its average.
+        # A player who comes off IR later is undercounted here until his manager
+        # activates him, which is the conservative way round and the only one this can
+        # see: Sleeper keeps publishing weekly rows for him either way.
+        projected[roster_id] = best_lineup(
+            slots,
+            {pid: (l.rest or 0.0) for pid, l in lines.items()},
+            {pid: frozenset(l.player.fantasy_positions) for pid, l in lines.items()},
+            roster=set(lines), unavailable=unavailable,
         ).total
 
         name, manager = names.get(roster_id, (f"Roster {roster_id}", None))
@@ -197,12 +219,17 @@ def build_league_view(
     cards.sort(key=lambda c: (not c.is_mine, not c.is_opponent, -c.total))
     return LeagueView(
         league_name=str(league.get("name") or ""), week=week, teams=tuple(cards),
-        playoffs=None if schedule is None else race(league, rosters, schedule),
+        playoffs=None if schedule is None else race(
+            league, rosters, schedule, scoring=estimate(history or {}, projected=projected)),
     )
 
 
 def race(
-    league: Mapping, rosters: Sequence[Mapping], schedule: Mapping[int, Sequence[Mapping]]
+    league: Mapping,
+    rosters: Sequence[Mapping],
+    schedule: Mapping[int, Sequence[Mapping]],
+    *,
+    scoring: Scoring | None = None,
 ) -> PlayoffPicture:
     """The playoff race from the table and the weeks still to be played.
 
@@ -227,7 +254,7 @@ def race(
         return PlayoffPicture(spots=spots, final_week=final_week, weeks_left=weeks,
                               games_left=0, trials=0, notes=(blocked,))
     return build_picture(table=table, remaining=games(schedule, weeks), spots=spots,
-                         final_week=final_week, weeks_left=weeks)
+                         final_week=final_week, weeks_left=weeks, scoring=scoring)
 
 
 def _notes(seats: Sequence[TeamSeat]) -> tuple[str, ...]:

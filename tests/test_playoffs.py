@@ -7,12 +7,14 @@ different answers. `test_the_flow_math_matches_exhaustive_enumeration` is the ba
 plays out every outcome of small leagues by hand and insists the flow agrees.
 """
 
+import math
 import random
 from itertools import combinations
 
 import pytest
 
 from ffa import playoffs as P
+from ffa import strength as S
 from ffa.lineup.league import build_league_view, race
 
 SETTINGS = {
@@ -366,7 +368,7 @@ def test_more_wins_never_lower_the_odds():
     screen is a bug however small the dip. Both the leagues and the sampler are seeded, so
     this either holds or it does not."""
     rng = random.Random(11)
-    for _ in range(25):
+    for case in range(15):
         size = rng.choice([8, 10, 12])
         standings = table(*[(rng.randint(0, 8), 0) for _ in range(size)])
         ids = [s.roster_id for s in standings]
@@ -380,6 +382,19 @@ def test_more_wins_never_lower_the_odds():
         picture = P.build_picture(table=standings, remaining=tuple(remaining),
                                   spots=size // 2, final_week=14, trials=4_000)
         for outlook in picture.teams:
+            drawn = [r.odds for r in outlook.by_wins if r.odds is not None]
+            assert drawn == sorted(drawn), f"roster {outlook.roster_id}: {drawn}"
+
+        # Again with scores rather than coin flips, where a topped-up cell and its
+        # neighbour are no longer even the same sample. On half the leagues: the scored
+        # path costs three times the coin-flip one and this is a sweep, not a proof.
+        if case % 2:
+            continue
+        means = {s.roster_id: 110.0 + rng.uniform(0, 40) for s in standings}
+        scored = P.build_picture(table=standings, remaining=tuple(remaining),
+                                 spots=size // 2, final_week=14, trials=3_000,
+                                 scoring=scoring(means))
+        for outlook in scored.teams:
             drawn = [r.odds for r in outlook.by_wins if r.odds is not None]
             assert drawn == sorted(drawn), f"roster {outlook.roster_id}: {drawn}"
 
@@ -409,6 +424,215 @@ def test_the_buckets_are_the_same_sample_as_the_headline_odds():
     for team, rows in buckets.items():
         assert sum(played for _, played in rows) == 1_000
         assert sum(made for made, _ in rows) == pytest.approx(chances[team] * 1_000)
+
+
+# -- when the odds stop being coin flips ------------------------------------------------
+
+
+def scoring(means, sd=22.0, reliability=0.7, weight=0.0):
+    """A `Scoring` built by hand, so these tests never touch the estimator."""
+    return S.Scoring(
+        teams=tuple(S.Strength(roster_id=roster, mean=mean, sd=sd, scored=mean,
+                               projected=None, weeks=8) for roster, mean in means.items()),
+        reliability=reliability, league_mean=sum(means.values()) / len(means),
+        weeks=8, sd=sd, projection_weight=weight,
+    )
+
+
+def even_league(weeks=3, size=6):
+    """Six teams, three spots, every team playing every week, and nobody level by luck."""
+    standings = table(*[(3, 3)] * size)
+    ids = [s.roster_id for s in standings]
+    remaining = []
+    for turn in range(weeks):
+        order = ids[turn:] + ids[:turn]
+        remaining += [(order[i], order[i + 1]) for i in range(0, size, 2)]
+    return standings, tuple(remaining)
+
+
+def test_a_team_that_scores_more_is_given_better_odds():
+    standings, remaining = even_league()
+    ids = [s.roster_id for s in standings]
+    strong, weak = ids[0], ids[1]
+    means = dict.fromkeys(ids, 125.0) | {strong: 150.0, weak: 100.0}
+    picture = P.build_picture(table=standings, remaining=remaining, spots=3,
+                              final_week=14, scoring=scoring(means))
+    assert picture.team(strong).odds > picture.team(weak).odds + 0.3
+    # And the record alone would have said nothing: they are on the same one.
+    assert picture.team(strong).standing.record == picture.team(weak).standing.record
+
+
+def test_equal_scoring_is_the_coin_flip_it_replaced():
+    """The degenerate case, and the one that says the draw is not quietly tilted.
+
+    Two draws from the same distribution give the better team nothing, so a league of
+    identical teams has to produce the same fair coin as the bit draw it replaced. Checked
+    on how often each team wins exactly k of its own games, which is the binomial either
+    way -- and checked there rather than on the odds, because the odds also carry the
+    tiebreak, which the scored path deliberately no longer freezes.
+    """
+    standings, remaining = even_league(weeks=5, size=6)
+    record = {s.roster_id: s.record for s in standings}
+    points = {s.roster_id: s.points_for for s in standings}
+    order = sorted(record)
+    index = {roster: slot for slot, roster in enumerate(order)}
+    pairs = [(index[a], index[b]) for a, b in remaining]
+    trials = 40_000
+    _, _, seen = P._score_trials([record[r] for r in order], [points[r] for r in order],
+                                 pairs, 3, trials, random.Random(P.ODDS_SEED),
+                                 [130.0] * len(order), 22.0)
+    for team, buckets in enumerate(seen):
+        games = len(buckets) - 1
+        for wins, drawn in enumerate(buckets):
+            expected = math.comb(games, wins) / 2 ** games
+            assert drawn / trials == pytest.approx(expected, abs=0.02), (team, wins)
+
+
+def test_the_tiebreak_stops_being_frozen_at_todays_points():
+    """Two teams level on record, one 30 points ahead on points-for with nine games still
+    to be scored. Frozen, that 30 decides every tie in the simulation and nothing can
+    change it; once the simulation scores the remaining weeks the gap is mostly noise, and
+    two teams this alike should come out alike.
+    """
+    standings, remaining = even_league()
+    ids = [s.roster_id for s in standings]
+    ahead, behind = ids[0], ids[1]
+    frozen = P.build_picture(table=standings, remaining=remaining, spots=3, final_week=14)
+    live = P.build_picture(table=standings, remaining=remaining, spots=3, final_week=14,
+                           scoring=scoring(dict.fromkeys(ids, 125.0)))
+    gap = abs(frozen.team(ahead).odds - frozen.team(behind).odds)
+    closed = abs(live.team(ahead).odds - live.team(behind).odds)
+    assert gap > 0.05, "the frozen tiebreak separates them on points nobody has scored yet"
+    assert closed < gap / 2
+
+
+def test_the_odds_still_add_up_to_the_number_of_places_when_scores_are_drawn():
+    standings, remaining = even_league()
+    means = {s.roster_id: 110.0 + 8 * s.roster_id for s in standings}
+    for spots in (1, 2, 4):
+        picture = P.build_picture(table=standings, remaining=remaining, spots=spots,
+                                  final_week=14, scoring=scoring(means))
+        assert sum(t.odds for t in picture.teams) == pytest.approx(spots, abs=1e-9)
+
+
+def test_a_thin_cell_is_drawn_again_rather_than_left_thin():
+    """A good team loses out about thirty times in ten thousand seasons, and a percentage
+    off thirty trials has no business being drawn to the whole number."""
+    standings, remaining = even_league(weeks=5, size=6)
+    ids = [s.roster_id for s in standings]
+    means = dict.fromkeys(ids, 120.0) | {ids[0]: 170.0}
+    picture = P.build_picture(table=standings, remaining=remaining, spots=3,
+                              final_week=14, scoring=scoring(means))
+    sampled = [row for team in picture.teams for row in team.by_wins
+               if not row.certain and not row.impossible]
+    assert sampled, "this league has cells the arithmetic cannot settle"
+    assert all(row.trials >= 400 for row in sampled), "400 being MIN_BUCKET_TRIALS"
+
+    # And the claim that makes the floor worth having: the plain sample does not reach it.
+    # The strongest team here loses all five of its games in well under a hundred of ten
+    # thousand seasons, which is the cell a manager goes looking for.
+    record = {s.roster_id: s.record for s in standings}
+    points = {s.roster_id: s.points_for for s in standings}
+    order = sorted(record)
+    index = {roster: slot for slot, roster in enumerate(order)}
+    _, _, seen = P._score_trials(
+        [record[r] for r in order], [points[r] for r in order],
+        [(index[a], index[b]) for a, b in remaining], 3, P.ODDS_TRIALS,
+        random.Random(P.ODDS_SEED), [means[r] for r in order], 22.0)
+    assert seen[index[ids[0]]][0] < 100
+
+
+def test_a_cell_drawn_again_agrees_with_the_one_it_replaces():
+    """The top-up is a second estimator of the same number, so where the first one has
+    enough trials to be trusted the two have to agree. This is what says the conditional
+    draw and the forced scores have not quietly biased the thing they sample."""
+    standings, remaining = even_league(weeks=4, size=6)
+    ids = [s.roster_id for s in standings]
+    means = {roster: 110.0 + 7 * index for index, roster in enumerate(ids)}
+    record = {s.roster_id: s.record for s in standings}
+    points = {s.roster_id: s.points_for for s in standings}
+    order = sorted(record)
+    index = {roster: slot for slot, roster in enumerate(order)}
+    base = [record[r] for r in order]
+    start = [points[r] for r in order]
+    pairs = [(index[a], index[b]) for a, b in remaining]
+    mu = [means[r] for r in order]
+    rng = random.Random(3)
+    _, hits, seen = P._score_trials(base, start, pairs, 3, 40_000, rng, mu, 22.0)
+    checked = 0
+    for team in range(len(order)):
+        for wins in range(len(seen[team])):
+            if seen[team][wins] < 4_000:
+                continue
+            plain = hits[team][wins] / seen[team][wins]
+            drawn, made = P._stratum(team, wins, 4_000, base, start, pairs, 3, rng, mu, 22.0)
+            spread = (max(plain * (1 - plain), 1e-4) * (1 / drawn + 1 / seen[team][wins])) ** 0.5
+            assert abs(plain - made / drawn) < 4 * spread + 0.01, (team, wins)
+            checked += 1
+    assert checked >= 8
+
+
+def test_the_conditional_draw_picks_the_games_it_was_favoured_in():
+    """Exactly k wins every time, and the games chosen in proportion to how likely each
+    was -- a team that wins two of three has most likely won the two it was favoured in,
+    not a uniform pair. Compared against the weights worked out by hand."""
+    chances = [0.8, 0.5, 0.2]
+    table_ = P._conditional(chances)
+    rng = random.Random(9)
+    for wins in (0, 1, 2, 3):
+        counts = {}
+        for _ in range(20_000):
+            drawn = tuple(P._draw_wins(chances, table_, wins, rng))
+            assert sum(drawn) == wins
+            counts[drawn] = counts.get(drawn, 0) + 1
+        exact = {}
+        for mask in range(8):
+            pattern = tuple(bool(mask >> i & 1) for i in range(3))
+            if sum(pattern) != wins:
+                continue
+            weight = 1.0
+            for chance, won in zip(chances, pattern):
+                weight *= chance if won else (1 - chance)
+            exact[pattern] = weight
+        total = sum(exact.values())
+        for pattern, weight in exact.items():
+            assert counts.get(pattern, 0) / 20_000 == pytest.approx(weight / total, abs=0.02)
+
+
+def test_a_forced_result_is_scored_like_one_rather_than_bolted_on():
+    """The team made to win has to win on the scoreboard too, and win the way it would
+    have anyway -- narrowly, when it was the underdog. Checked against rejection sampling,
+    which is the obvious correct method and far too slow for a one-in-three-hundred total.
+    """
+    import statistics as stats
+    mine, theirs, sd = 120.0, 140.0, 22.0
+    spread = sd * 2 ** 0.5
+    gap = stats.NormalDist(mine - theirs, spread)
+    cut = gap.cdf(0.0)
+    rng = random.Random(4)
+    forced = [P._split_scores(gap, cut, mine + theirs, spread, True, rng) for _ in range(20_000)]
+    assert all(ours > rival for ours, rival in forced), "the forced winner always wins"
+
+    keep = []
+    while len(keep) < 20_000:
+        ours, rival = rng.gauss(mine, sd), rng.gauss(theirs, sd)
+        if ours > rival:
+            keep.append((ours, rival))
+    for slot in (0, 1):
+        assert (stats.mean(side[slot] for side in forced)
+                == pytest.approx(stats.mean(side[slot] for side in keep), abs=1.0))
+        assert (stats.pstdev(side[slot] for side in forced)
+                == pytest.approx(stats.pstdev(side[slot] for side in keep), rel=0.1))
+
+
+def test_the_weeks_already_scored_are_the_other_half_of_the_boundary():
+    assert P.scored_weeks(SETTINGS) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
+    assert P.scored_weeks(league(start_week=2)["settings"]) == (2, 3, 4, 5, 6, 7, 8, 9)
+    assert P.scored_weeks(SETTINGS, final_week=5) == (1, 2, 3, 4, 5)
+    assert P.scored_weeks({"start_week": 1}) == ()
+    # No week belongs to both: one in progress is scored but not recorded, and is in
+    # neither, which is the whole reason both read the same two fields.
+    assert not set(P.scored_weeks(SETTINGS)) & set(P.undecided_weeks(SETTINGS, final_week=14))
 
 
 # -- the league shapes that are refused rather than guessed ----------------------------

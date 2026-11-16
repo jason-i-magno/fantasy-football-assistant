@@ -862,16 +862,21 @@ function renderPlayoffs(data) {
     row.append(el("div", "seed", team.seed));
     const main = el("div", "lmain");
     main.append(el("span", "name", team.name));
-    main.append(el("span", "rec", team.record));
+    // The scoring rate sits with the record because it answers the question the record
+    // provokes: two teams at 3-5 with the same number of games left are not the same team.
+    main.append(el("span", "rec",
+      team.pace ? `${team.record} · ${Math.round(team.pace)}/wk` : team.record));
     row.append(main);
     row.append(el("div", "needs" + needsStyle(team), team.needs));
     row.append(el("div", "odds", oddsLabel(team.odds)));
     if (team.why) row.append(el("div", "lwhy", team.why));
     rows.append(row);
   });
-  $("#playoff-foot").textContent =
-    "Needs = wins that clinch a place whatever else happens. "
-    + "Odds = if every game left were a coin flip.";
+  $("#playoff-foot").textContent = [
+    "Needs = wins that clinch a place whatever else happens.",
+    `Odds = ${race.basis || "if every game left were a coin flip"}.`,
+    race.pace_note || "",
+  ].filter(Boolean).join(" ");
   renderOddsByWins(race);
 }
 
@@ -924,7 +929,9 @@ function oddsCell(cell) {
   if (cell.odds >= 0.995) return el("div", "cell high", "~100");
   if (cell.odds < 0.005) return el("div", "cell low", "<1");
   const tone = cell.odds >= 0.5 ? "cell high" : cell.odds < 0.1 ? "cell low" : "cell";
-  return el("div", tone, String(Math.round(cell.odds * 100)));
+  // Never a bare 0 from a sampled cell: that is the dash's word, and it would sit under a
+  // `<1` that means something smaller.
+  return el("div", tone, String(Math.max(1, Math.round(cell.odds * 100))));
 }
 
 function needsStyle(team) {
