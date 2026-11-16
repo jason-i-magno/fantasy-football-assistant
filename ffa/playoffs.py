@@ -640,7 +640,8 @@ def _odds(
     if scoring is None:
         made, hits, seen = _coin_trials(base, start, pairs, spots, trials, rng)
     else:
-        means = [scoring.means.get(t, scoring.league_mean) for t in teams]
+        lookup = scoring.means
+        means = [lookup.get(t, scoring.league_mean) for t in teams]
         made, hits, seen = _score_trials(base, start, pairs, spots, trials, rng,
                                          means, scoring.sd)
         _top_up(hits, seen, base, start, pairs, spots, rng, means, scoring.sd,

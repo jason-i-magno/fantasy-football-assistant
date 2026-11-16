@@ -437,6 +437,8 @@ def playoffs_json(view: LeagueView) -> dict[str, Any] | None:
     if picture is None:
         return None
     names = {card.roster_id: (card.name, card.manager, card.is_mine) for card in view.teams}
+    pace = ({} if picture.scoring is None
+            else {t.roster_id: round(t.mean, 1) for t in picture.scoring.teams})
     return {
         "spots": picture.spots,
         "final_week": picture.final_week,
@@ -474,9 +476,7 @@ def playoffs_json(view: LeagueView) -> dict[str, Any] | None:
                 "eliminated": outlook.eliminated,
                 "in_places": outlook.seed <= picture.spots,
                 "odds": round(outlook.odds, 4),
-                "pace": None if (picture.scoring is None
-                                 or picture.scoring.team(outlook.roster_id) is None)
-                else round(picture.scoring.team(outlook.roster_id).mean, 1),
+                "pace": pace.get(outlook.roster_id),
                 "by_wins": [
                     {
                         "wins": row.wins,
