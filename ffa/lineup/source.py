@@ -13,11 +13,13 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 
 import httpx
 
 from ..espn import week_kickoffs
 from ..espn_fantasy import ESPNFantasyError, ESPNPlayer, fetch_weeks
+from ..fanout import gather
 from ..models import Player, to_int
 from ..playoffs import regular_season_end, scored_weeks, undecided_weeks
 from ..projections import LAST_WEEK, Projection, build, playoff_weeks, window_per_game
@@ -31,6 +33,9 @@ log = logging.getLogger(__name__)
 # How far ahead to look for the week that still has games left. Two is enough: the only time
 # the current week has no games to come is after its last kickoff, and then the next one does.
 WEEKS_AHEAD = 2
+# The build's one fan-out covers four feeds at once, so it is given a little more room
+# than a single feed's pages get. Still small: these are somebody else's servers.
+FETCH_WORKERS = 6
 
 
 class LineupUnavailable(Exception):
@@ -65,15 +70,27 @@ def load_advice(
     the same week, and the only request it adds is the league's user list. Splitting them
     would double the expensive half of this function to save a cached call.
     """
-    report = build_report(client, league_id, now, kickoffs_for)
     state = client.nfl_state()
     season = int(state.get("season") or now.year)
+    # The waiver report derives its own week from this same cached `nfl_state`, so reading
+    # it here costs nothing and removes the only reason the report had to finish first.
+    # It is used to pick which weeks of scoreboard to fetch and never as the target week,
+    # which `target_week` decides from the kickoffs themselves -- `nfl_state.week` has read
+    # 9 while the app still showed week 8.
+    base = to_int(state.get("week")) or 1
 
-    base = report.week
-    schedules = {
-        week: kickoffs_for(season, week)
-        for week in range(max(1, base - 1), min(LAST_REGULAR_WEEK, base + WEEKS_AHEAD) + 1)
+    # The report and the scoreboards want the same weeks between them and nothing from each
+    # other, so they all go at once: a scoreboard was a quarter of a second, fetched one
+    # week at a time, and the report spent most of its second on three of them.
+    kickoffs_once = _memoize_weeks(kickoffs_for)
+    wanted = range(max(1, base - 1), min(LAST_REGULAR_WEEK, base + WEEKS_AHEAD) + 1)
+    prelude: dict[tuple[str, int], Callable[[], object]] = {
+        ("report", 0): partial(build_report, client, league_id, now, kickoffs_once),
     }
+    prelude.update({("kick", w): partial(kickoffs_once, season, w) for w in wanted})
+    opened = gather(prelude, workers=FETCH_WORKERS)
+    report = opened[("report", 0)]
+    schedules = {w: opened[("kick", w)] for w in wanted}
     week = target_week(schedules, now)
     if week is None:
         raise LineupUnavailable(
@@ -94,9 +111,6 @@ def load_advice(
         if (player := Player.from_sleeper(pid, raw)) is not None
     }
 
-    sleeper_week = client.projections_week(str(season), week)
-    sleeper_season = client.projections_season(str(season))
-
     # Two windows, both built only from weeks still to be played. The fantasy playoffs are
     # a separate question from the rest of the season -- a player can be worth a point a
     # week in one and nothing in the other, because the schedule is different -- and
@@ -104,27 +118,48 @@ def load_advice(
     settings = league.get("settings") or {}
     window = tuple(w for w in playoff_weeks(settings) if w >= week)
     rest = tuple(range(week, _final_week(settings) + 1))
-    sources = LineupSources(sleeper=bool(sleeper_week), rest_weeks=rest, playoff_weeks=window)
+    open_weeks = undecided_weeks(settings, final_week=regular_season_end(settings))
+    played = scored_weeks(settings, final_week=regular_season_end(settings))
 
-    espn_weeks: dict[int, list[ESPNPlayer]] = {}
-    # One ESPN request carries every remaining week, so both windows are free here.
+    # Everything the target week makes fetchable, fetched together. These are four feeds
+    # that have nothing to say to each other -- ESPN's player pages, Sleeper's projections
+    # for each week still to be played, the fixtures still to come, and the scores already
+    # in -- and waiting for each in turn was most of a cold build. Keys are distinct, so
+    # no two jobs race for the same cached response.
     fetch_espn = espn_for or (lambda s, w: fetch_weeks(s, w, http=http))
-    try:
-        espn_weeks = fetch_espn(season, rest or (week,))
-        sources = LineupSources(sleeper=sources.sleeper, espn=bool(espn_weeks.get(week)),
-                                rest_weeks=rest, playoff_weeks=window)
-    except ESPNFantasyError as exc:
+    jobs: dict[tuple[str, int], Callable[[], object]] = {
+        ("espn", 0): partial(_espn_or_reason, fetch_espn, season, rest or (week,)),
+        ("season", 0): partial(client.projections_season, str(season)),
+    }
+    jobs.update({("sleeper", w): partial(client.projections_week, str(season), w)
+                 for w in rest})
+    # The weeks whose results are still to come, for the playoff race; and the weeks
+    # already played, which is what each team actually scores.
+    jobs.update({("fixture", w): partial(_matchups, client, league_id, w)
+                 for w in open_weeks})
+    jobs.update({("scored", w): partial(_matchups, client, league_id, w) for w in played})
+    if week not in open_weeks:
+        jobs[("fixture", week)] = partial(_matchups, client, league_id, week)
+    done = gather(jobs, workers=FETCH_WORKERS)
+
+    espn_weeks, espn_error = done[("espn", 0)]
+    sleeper_by_week = {w: done[("sleeper", w)] for w in rest}
+    sleeper_week = sleeper_by_week.get(week) or client.projections_week(str(season), week)
+    sleeper_season = done[("season", 0)]
+    schedule = {w: done[("fixture", w)] for w in open_weeks}
+    history = {w: _week_points(done[("scored", w)]) for w in played}
+    matchups = done.get(("fixture", week)) or []
+    if espn_error is not None:
         # A second opinion is an improvement, not a dependency. Losing it costs the spread
         # check and the role-change gap, so say so rather than silently halving the inputs.
-        log.warning("ESPN projections unavailable: %s", exc)
-        sources = LineupSources(sleeper=sources.sleeper, espn=False, espn_note=str(exc),
-                                rest_weeks=rest, playoff_weeks=window)
+        log.warning("ESPN projections unavailable: %s", espn_error)
+    sources = LineupSources(
+        sleeper=bool(sleeper_week),
+        espn=bool(espn_weeks.get(week)),
+        espn_note=None if espn_error is None else str(espn_error),
+        rest_weeks=rest, playoff_weeks=window,
+    )
     espn_rows = espn_weeks.get(week, [])
-
-    # Sleeper is asked per week, so each week in the window costs a request; they are cached
-    # for the run and the whole report is cached for minutes, so it is paid rarely. Fetched
-    # once and sliced: the playoff weeks are a subset of the weeks still to be played.
-    sleeper_by_week = {w: client.projections_week(str(season), w) for w in rest}
     per_game = {
         name: window_per_game(
             players=players,
@@ -155,21 +190,6 @@ def load_advice(
     user = client.user(username)
     user_id = str(user.get("user_id") or "")
     rosters = client.rosters(league_id)
-    # The weeks whose results are still to come, for the playoff race. Only these: the
-    # boundary comes from `last_scored_leg`, so the weeks already in the table cost nothing
-    # to skip, and the target week is usually the first of them and already cached.
-    schedule = {
-        w: _matchups(client, league_id, w)
-        for w in undecided_weeks(settings, final_week=regular_season_end(settings))
-    }
-    matchups = schedule.get(week) or _matchups(client, league_id, week)
-    # And the weeks already played, which is what each team actually scores. Eight more
-    # cached requests, and the only thing that stops the playoff odds flipping a coin for
-    # a 150-a-week team against a 100-a-week one.
-    history = {
-        w: _week_points(_matchups(client, league_id, w))
-        for w in scored_weeks(settings, final_week=regular_season_end(settings))
-    }
     starters = _starters_for_week(matchups, user_id, rosters)
 
     kwargs = {} if max_adds is None else {"max_adds": max_adds}
@@ -196,6 +216,38 @@ def _final_week(settings: Mapping) -> int:
     """
     weeks = playoff_weeks(settings)
     return max(weeks) if weeks else LAST_WEEK
+
+
+def _memoize_weeks(fetch: Callable[[int, int], Mapping[str, datetime]]):
+    """One scoreboard per week for the life of a build, shared across threads.
+
+    The report asks for three weeks and the lineup for five, overlapping in all three, so
+    without this the same scoreboard is fetched twice while both are in flight. Two threads
+    missing at once fetch twice and keep one answer, which is a wasted request and never a
+    wrong one -- the alternative is holding a lock across somebody else's network call.
+    """
+    seen: dict[tuple[int, int], Mapping[str, datetime]] = {}
+
+    def once(season: int, week: int) -> Mapping[str, datetime]:
+        key = (season, week)
+        hit = seen.get(key)
+        if hit is None:
+            hit = seen.setdefault(key, fetch(season, week))
+        return hit
+
+    return once
+
+
+def _espn_or_reason(fetch, season: int, weeks: Sequence[int]):
+    """ESPN's weeks, or the reason there are none. Never raises.
+
+    The soft failure has to happen inside the job: a fan-out raises the first exception any
+    job raised, and losing ESPN is not a reason to lose the build.
+    """
+    try:
+        return fetch(season, weeks), None
+    except ESPNFantasyError as exc:
+        return {}, exc
 
 
 def _week_points(entries: Sequence[Mapping]) -> dict[int, float]:

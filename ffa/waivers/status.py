@@ -26,9 +26,11 @@ to come, a bye-week player really is a free agent, and adds of them do complete.
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
+from functools import partial
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
+from ..fanout import gather
 from ..models import Player, to_int
 
 PACIFIC = ZoneInfo("America/Los_Angeles")
@@ -237,7 +239,10 @@ def build_report(
     # hold a lock, and next week's are fetched in case Sleeper's week hasn't flipped yet.
     weeks = [w for w in (week - 1, week, week + 1) if 1 <= w <= LAST_REGULAR_WEEK]
     # Rule 3 needs each week's schedule whole, so these stay unmerged for `week_closed_at`.
-    schedules = [kickoffs_for(season, w) for w in weeks]
+    # Three scoreboards with nothing between them: fetched one at a time this was 0.72s of
+    # a one-second report, and the list has to stay in week order either way.
+    fetched = gather({w: partial(kickoffs_for, season, w) for w in weeks})
+    schedules = [fetched[w] for w in weeks]
     kickoffs = last_kickoffs(schedules, now)
     closed = week_closed_at(schedules, now)
     drops = recent_drops(
