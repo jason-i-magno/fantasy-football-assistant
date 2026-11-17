@@ -828,7 +828,119 @@ function chosenTeam(data) {
   return picked || teams.find((t) => t.opponent) || teams.find((t) => !t.mine) || teams[0];
 }
 
+// The race for the whole league. The two numbers answer different questions and are kept
+// visibly apart: "needs" is arithmetic that holds whatever happens, "odds" is a coin flip.
+function renderPlayoffs(data) {
+  const race = (data || {}).playoffs;
+  const card = $("#playoff-card");
+  show(card, !!race);
+  if (!race) return;
+  const weeks = (race.weeks_left || []).length;
+  $("#playoff-sub").textContent = race.teams.length
+    ? `${race.spots} of ${race.teams.length} · ${weeks} week${weeks === 1 ? "" : "s"} left`
+    : "";
+  const rows = clear($("#playoff-rows"));
+  if (!race.teams.length) {
+    rows.append(el("div", "wline warn-text", (race.notes || []).join("; ")));
+    $("#playoff-foot").textContent = "";
+    return;
+  }
+  // A header row, because two bare numbers in a row need saying which is which before
+  // the footnote gets a chance to.
+  const head = el("div", "lrow race-row head");
+  head.append(el("div", "seed", "#"));
+  const heading = el("div", "lmain");
+  heading.append(el("span", "name", "Team"));
+  head.append(heading);
+  head.append(el("div", "needs", "Needs"));
+  head.append(el("div", "odds", "Odds"));
+  rows.append(head);
+  race.teams.forEach((team) => {
+    const row = el("div", "lrow race-row");
+    if (team.in_places) row.classList.add("inside");
+    if (team.mine) row.classList.add("mine");
+    row.append(el("div", "seed", team.seed));
+    const main = el("div", "lmain");
+    main.append(el("span", "name", team.name));
+    main.append(el("span", "rec", team.record));
+    row.append(main);
+    row.append(el("div", "needs" + needsStyle(team), team.needs));
+    row.append(el("div", "odds", oddsLabel(team.odds)));
+    if (team.why) row.append(el("div", "lwhy", team.why));
+    rows.append(row);
+  });
+  $("#playoff-foot").textContent =
+    "Needs = wins that clinch a place whatever else happens. "
+    + "Odds = if every game left were a coin flip.";
+  renderOddsByWins(race);
+}
+
+// Each team's whole row of win totals, which is the question one percentage cannot answer:
+// not whether a team gets in, but whether three wins would do it. The cell a row first
+// shows as certain is its clinch number from the table above -- the one place the
+// arithmetic and the simulation are drawn as a single thing.
+function renderOddsByWins(race) {
+  const teams = race.teams || [];
+  const width = teams.reduce((n, t) => Math.max(n, (t.by_wins || []).length), 0);
+  show($("#playoff-odds-block"), width > 1);
+  const rows = clear($("#playoff-odds"));
+  if (width <= 1) return;  // nothing left to play: the table above has said it all
+  // The name gives way to the numbers: every column has to be on screen at a phone's
+  // width, because the one a manager wants is winning out, which is the last of them.
+  // Pixels, not `em`: the track would resolve against the row's font size rather than the
+  // cells', which cost the name column fifty of its pixels and most of a team's name.
+  const columns = `16px minmax(44px, 1fr) repeat(${width}, 27px)`;
+  const head = el("div", "lrow odds-row head");
+  head.style.gridTemplateColumns = columns;
+  head.append(el("div", "seed", "#"));
+  head.append(el("div", "name", "Team"));
+  for (let k = 0; k < width; k += 1) head.append(el("div", "cell", "+" + k));
+  rows.append(head);
+  teams.forEach((team) => {
+    const cells = team.by_wins || [];
+    const row = el("div", "lrow odds-row");
+    row.style.gridTemplateColumns = columns;
+    if (team.in_places) row.classList.add("inside");
+    if (team.mine) row.classList.add("mine");
+    row.append(el("div", "seed", team.seed));
+    row.append(el("div", "name", team.name));
+    cells.forEach((cell) => row.append(oddsCell(cell)));
+    // A team with fewer games left than the league's longest run leaves blanks, not zeros.
+    for (let k = cells.length; k < width; k += 1) row.append(el("div", "cell", ""));
+    rows.append(row);
+  });
+  $("#playoff-odds-foot").textContent =
+    "Columns are wins from here, so +0 is losing out. 100 = certain, ~100 = never seen to "
+    + "miss, – = not enough whatever else happens.";
+}
+
+// A dash and a flat 100 are arithmetic. Everything else is a count of simulated seasons,
+// and the two are never written the same way: `<1` is a total the coin flips never got in
+// on, which is not the dash's claim that nothing could.
+function oddsCell(cell) {
+  if (cell.impossible) return el("div", "cell out", "–");
+  if (cell.certain) return el("div", "cell sure", "100");
+  if (cell.odds === null || cell.odds === undefined) return el("div", "cell out", "·");
+  if (cell.odds >= 0.995) return el("div", "cell high", "~100");
+  if (cell.odds < 0.005) return el("div", "cell low", "<1");
+  const tone = cell.odds >= 0.5 ? "cell high" : cell.odds < 0.1 ? "cell low" : "cell";
+  return el("div", tone, String(Math.round(cell.odds * 100)));
+}
+
+function needsStyle(team) {
+  if (team.eliminated) return " bad";
+  if (team.clinched) return " good";
+  return "";
+}
+
+function oddsLabel(odds) {
+  if (odds >= 0.995) return "~100%";
+  if (odds > 0 && odds < 0.005) return "<1%";
+  return `${Math.round(odds * 100)}%`;
+}
+
 function renderLeague(data) {
+  renderPlayoffs(data);
   const teams = teamsOf(data);
   const bar = $("#team-chips");
   show(bar, teams.length > 1);

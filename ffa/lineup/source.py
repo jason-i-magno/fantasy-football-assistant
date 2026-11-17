@@ -19,6 +19,7 @@ import httpx
 from ..espn import week_kickoffs
 from ..espn_fantasy import ESPNFantasyError, ESPNPlayer, fetch_weeks
 from ..models import Player
+from ..playoffs import regular_season_end, undecided_weeks
 from ..projections import LAST_WEEK, Projection, build, playoff_weeks, window_per_game
 from ..sleeper import SleeperClient
 from ..waivers.status import LAST_REGULAR_WEEK, build_report
@@ -154,7 +155,14 @@ def load_advice(
     user = client.user(username)
     user_id = str(user.get("user_id") or "")
     rosters = client.rosters(league_id)
-    matchups = _matchups(client, league_id, week)
+    # The weeks whose results are still to come, for the playoff race. Only these: the
+    # boundary comes from `last_scored_leg`, so the weeks already in the table cost nothing
+    # to skip, and the target week is usually the first of them and already cached.
+    schedule = {
+        w: _matchups(client, league_id, w)
+        for w in undecided_weeks(settings, final_week=regular_season_end(settings))
+    }
+    matchups = schedule.get(week) or _matchups(client, league_id, week)
     starters = _starters_for_week(matchups, user_id, rosters)
 
     kwargs = {} if max_adds is None else {"max_adds": max_adds}
@@ -168,6 +176,7 @@ def load_advice(
         matchups=matchups, projections=projections, players=players, week=week,
         kickoffs=kickoffs, now=now, my_roster_id=advice.roster_id,
         horizon=Horizon(rest_weeks=len(rest), playoff_weeks=len(window)),
+        schedule=schedule,
     )
     return advice, view, sources
 

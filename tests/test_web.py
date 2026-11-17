@@ -441,13 +441,29 @@ def _advice_loader(calls):
         world = roster_world(SETTLED_STARTERS, SETTLED_BENCH,
                              free_agents=[("fa_te", "TE", 12.0, 12.0)])
         advice = build_advice(**world)
+        # A two-team race on top of the same roster: one place, two weeks left, so the
+        # phone's playoff card has something real to draw.
+        racing = {**world["league"], "settings": {
+            **(world["league"].get("settings") or {}),
+            "playoff_teams": 1, "playoff_week_start": 11,
+            "start_week": 1, "last_scored_leg": 8,
+        }}
+        standing_rosters = [
+            {**world["rosters"][0],
+             "settings": {"wins": 5, "losses": 3, "ties": 0, "fpts": 900, "fpts_decimal": 0}},
+            {"roster_id": 4, "owner_id": "u4", "players": [], "starters": [],
+             "settings": {"wins": 3, "losses": 5, "ties": 0, "fpts": 800, "fpts_decimal": 0}},
+        ]
+        schedule = {week: [{"roster_id": 3, "matchup_id": 1, "points": 0.0},
+                           {"roster_id": 4, "matchup_id": 1, "points": 0.0}]
+                    for week in (9, 10)}
         view = build_league_view(
-            league=world["league"], rosters=world["rosters"],
+            league=racing, rosters=standing_rosters,
             users=[{"user_id": "u1", "display_name": "me",
                     "metadata": {"team_name": "My Team"}}],
             matchups=[], projections=world["projections"], players=world["players"],
             week=world["week"], kickoffs=world["kickoffs"], now=world["now"],
-            my_roster_id=advice.roster_id,
+            my_roster_id=advice.roster_id, schedule=schedule,
         )
         return advice, view, LineupSources(sleeper=True, espn=True)
 
@@ -476,6 +492,25 @@ def test_lineup_payload_carries_the_whole_screen(recording):
     assert team["name"] == "My Team" and team["mine"] is True
     assert [seat["slot"] for seat in team["lineup"]] == [seat["slot"] for seat in body["lineup"]]
     assert {"points", "rest", "playoff", "on_bye"} <= set(team["lineup"][0]["player"])
+
+    # The race rides along too, with the names already joined on.
+    race = body["playoffs"]
+    assert race["spots"] == 1 and race["weeks_left"] == [9, 10] and race["games_left"] == 2
+    leader, chaser = race["teams"]
+    assert leader["name"] == "My Team" and leader["mine"] is True and leader["seed"] == 1
+    assert leader["record"] == "5-3" and leader["in_places"] is True
+    assert leader["needs"] == "1" and leader["wins_to_clinch"] == 1
+    # The chaser can get there by winning out, but winning out cannot make it certain:
+    # level on record, it is assumed to lose the tiebreak.
+    assert chaser["wins_to_survive"] == 2 and chaser["wins_to_clinch"] is None
+    assert chaser["needs"] == "—" and chaser["eliminated"] is False
+    assert 0.0 <= chaser["odds"] <= 1.0
+    # And the whole row, so the phone draws every win total still open without arithmetic
+    # of its own: the final win column, and which ends the flow settled rather than sampled.
+    assert [cell["wins"] for cell in leader["by_wins"]] == [0, 1, 2]
+    assert [cell["record"] for cell in leader["by_wins"]] == ["5", "6", "7"]
+    assert [cell["certain"] for cell in leader["by_wins"]] == [False, True, True]
+    assert [cell["impossible"] for cell in chaser["by_wins"]] == [True, True, False]
 
 
 def test_one_build_serves_every_screen(recording):

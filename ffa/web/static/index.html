@@ -73,6 +73,19 @@
   <section id="panel-league" class="panel hidden">
     <div id="league-banner" class="banner hidden"></div>
 
+    <section class="card race" id="playoff-card" hidden>
+      <div class="name">Playoff race <span class="sub" id="playoff-sub"></span></div>
+      <div class="body" id="playoff-rows"></div>
+      <div class="wline dim" id="playoff-foot"></div>
+      <!-- One block, so `show` toggles the heading and the grid together and neither can
+           be left behind on a league with nothing still to play. -->
+      <div id="playoff-odds-block" hidden>
+        <div class="name">Odds by wins from here</div>
+        <div class="body scrollx" id="playoff-odds"></div>
+        <div class="wline dim" id="playoff-odds-foot"></div>
+      </div>
+    </section>
+
     <div class="chips teams" id="team-chips" hidden></div>
 
     <section class="card" id="league-team-card">
