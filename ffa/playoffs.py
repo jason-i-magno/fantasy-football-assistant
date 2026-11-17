@@ -43,11 +43,13 @@ they are refused by name in `unsupported` instead of being guessed at.
 
 import math
 import random
+import statistics as st
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import combinations
 
 from .models import to_int
+from .strength import Scoring, win_probability
 
 # Coin-flip trials behind the odds. Ten thousand puts the standard error on a 50% chance at
 # half a point, which is below the whole percent the figure is shown to.
@@ -55,6 +57,13 @@ ODDS_TRIALS = 10_000
 # Fixed, so the same standings give the same odds twice. A number that moves when nothing
 # else has is a number nobody can check.
 ODDS_SEED = 1_000_003
+# A by-wins cell drawn from fewer trials than this is not worth the whole percent it would
+# be shown to, so it is sampled again on its own terms. Under coin flips the thinnest cell
+# of a five-game run holds 312 trials; once the teams have different strengths the same
+# cell can hold 34, because a good team rarely loses out. See `_stratum`.
+MIN_BUCKET_TRIALS = 400
+# A hard stop on that top-up, so a strange league cannot turn one build into a minute.
+TOPUP_BUDGET = 25_000
 
 Game = tuple[int, int]  # the two roster ids, in no particular order
 
@@ -150,6 +159,7 @@ class PlayoffPicture:
     trials: int
     teams: tuple[TeamOutlook, ...] = ()
     notes: tuple[str, ...] = ()
+    scoring: Scoring | None = None  # None when every game was a coin flip
 
     def team(self, roster_id: int | None) -> TeamOutlook | None:
         return next((t for t in self.teams if t.roster_id == roster_id), None)
@@ -227,6 +237,22 @@ def undecided_weeks(settings: Mapping, *, final_week: int) -> tuple[int, ...]:
     return tuple(range(first_open, final_week + 1))
 
 
+def scored_weeks(settings: Mapping, *, final_week: int | None = None) -> tuple[int, ...]:
+    """Regular-season weeks whose results *are* in the table, earliest first.
+
+    The complement of `undecided_weeks`, and deliberately the same two fields, so the week
+    a league is in is decided in one place. A week in progress belongs to neither: it is
+    scored but not recorded, and its points are half a Sunday's worth, which would make a
+    team's scoring average a lie about a week nobody has finished.
+    """
+    start = max(1, to_int(settings.get("start_week")) or 1)
+    last = to_int(settings.get("last_scored_leg"))
+    if last is None:
+        return ()
+    end = last if final_week is None else min(last, final_week)
+    return tuple(range(start, end + 1))
+
+
 def reconciles(settings: Mapping, *, played: int) -> bool:
     """Does the published boundary agree with the games the table says have been played?
 
@@ -272,32 +298,57 @@ def build_picture(
     weeks_left: Sequence[int] = (),
     trials: int = ODDS_TRIALS,
     notes: Sequence[str] = (),
+    scoring: Scoring | None = None,
 ) -> PlayoffPicture:
-    """Solve the race. Pure: everything here is arithmetic over what was passed in."""
+    """Solve the race. Pure: everything here is arithmetic over what was passed in.
+
+    `scoring` turns the simulation from coin flips into draws from each team's own scoring,
+    with the points accumulating into the tiebreak. Left out, every game is a coin flip and
+    the tiebreak stays frozen at the points already scored. It changes nothing above: the
+    clinch and survival numbers are arithmetic over the schedule and have no model in them.
+    """
     record = {s.roster_id: s.record for s in table}
     points = {s.roster_id: s.points_for for s in table}
     spots = max(0, min(spots, len(table)))
-    chances, buckets = _odds(record, points, remaining, spots, trials)
+
+    # The guaranteed numbers first, because they say which by-wins cells will be drawn from
+    # the sample at all -- and a cell the arithmetic answers is not worth a trial.
+    own = {s.roster_id: sum(1 for game in remaining if s.roster_id in game) for s in table}
+    clinches, survivals = {}, {}
+    for standing in table:
+        team = standing.roster_id
+        clinches[team] = _first_true(0, own[team], lambda k, t=team: not _can_miss(
+            t, k, record=record, remaining=remaining, spots=spots))
+        survivals[team] = _first_true(0, own[team], lambda k, t=team: _can_make(
+            t, k, record=record, remaining=remaining, spots=spots))
+    wanted = {
+        team: {k for k in range(count + 1)
+               if not _settled(k, clinches[team], survivals[team])}
+        for team, count in own.items()
+    }
+    chances, buckets = _odds(record, points, remaining, spots, trials,
+                             scoring=scoring, wanted=wanted)
 
     outlooks: list[TeamOutlook] = []
     for seed, standing in enumerate(table, start=1):
         team = standing.roster_id
-        own = sum(1 for game in remaining if team in game)
-        clinch = _first_true(0, own, lambda k, t=team: not _can_miss(
-            t, k, record=record, remaining=remaining, spots=spots))
-        survive = _first_true(0, own, lambda k, t=team: _can_make(
-            t, k, record=record, remaining=remaining, spots=spots))
+        clinch, survive = clinches[team], survivals[team]
         outlooks.append(TeamOutlook(
-            roster_id=team, standing=standing, seed=seed, games_left=own,
+            roster_id=team, standing=standing, seed=seed, games_left=own[team],
             wins_to_clinch=clinch, wins_to_survive=survive,
             odds=chances.get(team, 0.0),
-            by_wins=_by_wins(standing, own, clinch, survive, buckets.get(team, ())),
+            by_wins=_by_wins(standing, own[team], clinch, survive, buckets.get(team, ())),
         ))
     return PlayoffPicture(
         spots=spots, final_week=final_week, weeks_left=tuple(weeks_left),
         games_left=len(remaining), trials=trials,
-        teams=tuple(outlooks), notes=tuple(notes),
+        teams=tuple(outlooks), notes=tuple(notes), scoring=scoring,
     )
+
+
+def _settled(wins: int, clinch: int | None, survive: int | None) -> bool:
+    """Is this win total already answered by the arithmetic, sample or no sample?"""
+    return (clinch is not None and wins >= clinch) or survive is None or wins < survive
 
 
 def _by_wins(
@@ -547,31 +598,28 @@ def _odds(
     remaining: Sequence[Game],
     spots: int,
     trials: int,
+    *,
+    scoring: Scoring | None = None,
+    wanted: Mapping[int, set[int]] | None = None,
 ) -> tuple[dict[int, float], dict[int, tuple[tuple[int, int], ...]]]:
-    """How often each roster makes the playoffs with every remaining game a coin flip.
+    """How often each roster makes the playoffs over `trials` simulated seasons.
 
     Returns the chance for each roster, and the same trials split by how many of its own
     games it won: `(made, played)` per win total, which is the conditional the by-wins row
     is read off. Splitting them costs one pass over the teams per trial and no extra
-    trials, and it is the same sample, so the two figures cannot disagree about a league.
+    trials, so the two figures are the same sample and cannot disagree about a league.
 
-    Not a forecast, and labelled as such wherever it is shown: a coin flip says the worst
-    team in the league is as likely to win on Sunday as the best. What it does give is the
-    shape the guaranteed numbers cannot -- that two wins is nearly always enough from 5-3,
-    and nearly never from 2-6 -- without a model of team strength that would be a guess
-    dressed as a projection.
+    With no `scoring` every game is a coin flip -- the worst team in the league as likely
+    to win on Sunday as the best -- and the tiebreak stays frozen at the points already
+    scored. It is the right model for week one, when nothing has been played, and the
+    wrong one by week nine, so `scoring` replaces it with two draws from each team's own
+    scoring: the higher score takes the win, and both are added to the points-for that
+    breaks ties, which is the half of the tiebreak the frozen version could never get
+    right. One `getrandbits` call settles a whole week of coin-flip fixtures; the seed is
+    fixed either way, so the same table produces the same percentages every time.
 
-    One `getrandbits` call settles a whole week of fixtures, and the seed is fixed, so the
-    same table produces the same percentages every time it is drawn. A team's own wins come
-    out of that same draw in one operation: `want` holds the bits that mean this roster
-    won, so where the draw agrees with it inside `mask`, it won, and the agreements are
-    counted with `bit_count`.
-
-    The split buckets are not evenly filled -- five games left divides ten thousand trials
-    into 312, 1562, 3125, 3125, 1562 and 312 -- so the noise is worst at the extreme
-    totals. That is the opposite of a problem: those are the totals the arithmetic in
-    `_by_wins` answers outright, and the thinly sampled ones left over are those where
-    winning out or losing out is neither certain nor impossible.
+    `wanted` names the cells the arithmetic has *not* already settled. Those are the only
+    ones worth sampling, and the thin ones among them are drawn again by `_stratum`.
     """
     teams = sorted(record)
     if not teams or spots <= 0:
@@ -580,38 +628,215 @@ def _odds(
         return dict.fromkeys(teams, 1.0), {}
     index = {team: offset for offset, team in enumerate(teams)}
     base = [record[t] for t in teams]
-    tiebreak = [points.get(t, 0.0) for t in teams]
+    start = [points.get(t, 0.0) for t in teams]
     pairs = [(index[a], index[b]) for a, b in remaining if a in index and b in index]
     if not pairs:
-        ranked = sorted(range(len(teams)), key=lambda i: (-base[i], -tiebreak[i]))
+        ranked = sorted(range(len(teams)), key=lambda i: (-base[i], -start[i]))
         return ({teams[i]: 1.0 if place < spots else 0.0
                  for place, i in enumerate(ranked)}, {})
 
     rng = random.Random(ODDS_SEED)
+    trials = max(1, trials)
+    if scoring is None:
+        made, hits, seen = _coin_trials(base, start, pairs, spots, trials, rng)
+    else:
+        lookup = scoring.means
+        means = [lookup.get(t, scoring.league_mean) for t in teams]
+        made, hits, seen = _score_trials(base, start, pairs, spots, trials, rng,
+                                         means, scoring.sd)
+        _top_up(hits, seen, base, start, pairs, spots, rng, means, scoring.sd,
+                {index[t]: ks for t, ks in (wanted or {}).items() if t in index})
+    return ({team: made[index[team]] / trials for team in teams},
+            {team: tuple(zip(hits[index[team]], seen[index[team]])) for team in teams})
+
+
+def _coin_trials(base, start, pairs, spots, trials, rng):
+    """Every game a coin flip, and the tiebreak frozen at the points already scored.
+
+    A team's own wins come out of the same draw in one operation: `want` holds the bits
+    that mean this roster won, so where the draw agrees with it inside `mask`, it won, and
+    the agreements are counted with `bit_count`.
+    """
+    count = len(base)
     width = len(pairs)
-    made = [0] * len(teams)
-    mask = [0] * len(teams)
-    want = [0] * len(teams)
+    mask = [0] * count
+    want = [0] * count
     for offset, (first, second) in enumerate(pairs):
         bit = 1 << offset
         mask[first] |= bit
         mask[second] |= bit
         want[first] |= bit  # a set bit is the first roster of the pair winning
-    own = [bits.bit_count() for bits in mask]
-    hits = [[0] * (count + 1) for count in own]
-    seen = [[0] * (count + 1) for count in own]
-    trials = max(1, trials)
+    hits = [[0] * (bits.bit_count() + 1) for bits in mask]
+    seen = [[0] * (bits.bit_count() + 1) for bits in mask]
+    made = [0] * count
     for _ in range(trials):
         tally = base.copy()
         draw = rng.getrandbits(width)
         for offset, (first, second) in enumerate(pairs):
             tally[first if (draw >> offset) & 1 else second] += 1.0
-        order = sorted(range(len(teams)), key=lambda i: (-tally[i], -tiebreak[i]))
-        wins = [(~(draw ^ want[i]) & mask[i]).bit_count() for i in range(len(teams))]
-        for i, count in enumerate(wins):
-            seen[i][count] += 1
+        order = sorted(range(count), key=lambda i: (-tally[i], -start[i]))
+        wins = [(~(draw ^ want[i]) & mask[i]).bit_count() for i in range(count)]
+        for i, won in enumerate(wins):
+            seen[i][won] += 1
         for i in order[:spots]:
             made[i] += 1
             hits[i][wins[i]] += 1
-    return ({team: made[index[team]] / trials for team in teams},
-            {team: tuple(zip(hits[index[team]], seen[index[team]])) for team in teams})
+    return made, hits, seen
+
+
+def _score_trials(base, start, pairs, spots, trials, rng, means, sd):
+    """Two scores a game, drawn from what each team scores, and both kept.
+
+    The win goes to the higher score and the scores themselves go into the points-for that
+    breaks ties -- so a team that scores its way to a tie on record carries the points it
+    scored getting there, which is the thing the frozen tiebreak cannot do. One spread
+    serves every team: eight games is far too few to tell a volatile roster from a steady
+    one, and a per-team variance estimated from that would be noise given a name.
+    """
+    count = len(base)
+    own = [0] * count
+    for first, second in pairs:
+        own[first] += 1
+        own[second] += 1
+    hits = [[0] * (games + 1) for games in own]
+    seen = [[0] * (games + 1) for games in own]
+    made = [0] * count
+    gauss = rng.gauss
+    for _ in range(trials):
+        tally = base.copy()
+        total = start.copy()
+        for first, second in pairs:
+            ours, theirs = gauss(means[first], sd), gauss(means[second], sd)
+            total[first] += ours
+            total[second] += theirs
+            tally[first if ours > theirs else second] += 1.0
+        order = sorted(range(count), key=lambda i: (-tally[i], -total[i]))
+        wins = [round(tally[i] - base[i]) for i in range(count)]
+        for i, won in enumerate(wins):
+            seen[i][won] += 1
+        for i in order[:spots]:
+            made[i] += 1
+            hits[i][wins[i]] += 1
+    return made, hits, seen
+
+
+def _top_up(hits, seen, base, start, pairs, spots, rng, means, sd, wanted):
+    """Draw the thinly sampled cells again, on their own terms.
+
+    Coin flips spread a five-game run 312/1562/3125/3125/1562/312, which is thin at the
+    ends and tolerable. Once the teams have different strengths it is far worse: the best
+    team in a real league loses all five games in 34 trials out of ten thousand, and a
+    percentage off 34 trials has no business being drawn to the whole number. These cells
+    are exactly the ones a manager looks for -- what happens if I lose out -- so they are
+    sampled directly instead of being left to turn up.
+    """
+    budget = TOPUP_BUDGET
+    thin = sorted(
+        ((team, wins) for team, totals in wanted.items() for wins in totals
+         if wins < len(seen[team]) and seen[team][wins] < MIN_BUCKET_TRIALS),
+        key=lambda cell: seen[cell[0]][cell[1]],
+    )
+    for team, wins in thin:
+        need = min(MIN_BUCKET_TRIALS - seen[team][wins], budget)
+        if need <= 0:
+            break
+        drawn, made = _stratum(team, wins, need, base, start, pairs, spots, rng, means, sd)
+        hits[team][wins] += made
+        seen[team][wins] += drawn
+        budget -= drawn
+
+
+def _stratum(team, wins, trials, base, start, pairs, spots, rng, means, sd):
+    """Seasons where one team wins exactly this many of its own games, and nothing else.
+
+    Conditioning is exact rather than by rejection, which for a one-in-three-hundred total
+    would mean three hundred thrown-away seasons each time. Two pieces do it. Which games
+    it wins comes from the conditional Bernoulli (`_conditional` and `_draw_wins`): the
+    games are independent but not equally likely, so a team that wins three of five has
+    most likely won the three it was favoured in. And the scores behind a forced result
+    come from `_split_scores`, because a win drawn without its scores would hand the team a
+    record it did not score the points for, and the points are what breaks the tie.
+    """
+    own = [(offset, _opponent(pair, team)) for offset, pair in enumerate(pairs)
+           if team in pair]
+    if wins > len(own):
+        return 0, 0
+    rest = [pair for pair in pairs if team not in pair]
+    chances = [win_probability(means[team], means[rival], sd) for _, rival in own]
+    spread = sd * math.sqrt(2)
+    gaps = [st.NormalDist(means[team] - means[rival], spread) for _, rival in own]
+    cuts = [gap.cdf(0.0) for gap in gaps]
+    table = _conditional(chances)
+    count = len(base)
+    gauss = rng.gauss
+    made = 0
+    for _ in range(trials):
+        tally = base.copy()
+        total = start.copy()
+        for slot, won in enumerate(_draw_wins(chances, table, wins, rng)):
+            rival = own[slot][1]
+            ours, theirs = _split_scores(gaps[slot], cuts[slot], means[team] + means[rival],
+                                         spread, won, rng)
+            total[team] += ours
+            total[rival] += theirs
+            tally[team if won else rival] += 1.0
+        for first, second in rest:
+            ours, theirs = gauss(means[first], sd), gauss(means[second], sd)
+            total[first] += ours
+            total[second] += theirs
+            tally[first if ours > theirs else second] += 1.0
+        order = sorted(range(count), key=lambda i: (-tally[i], -total[i]))
+        if team in order[:spots]:
+            made += 1
+    return trials, made
+
+
+def _conditional(chances: Sequence[float]) -> list[list[float]]:
+    """`table[j][c]`: the chance that exactly c of the games from j onwards are won."""
+    count = len(chances)
+    table = [[0.0] * (count + 1) for _ in range(count + 1)]
+    table[count][0] = 1.0
+    for game in range(count - 1, -1, -1):
+        chance = chances[game]
+        for won in range(count - game + 1):
+            table[game][won] = (1 - chance) * table[game + 1][won]
+            if won:
+                table[game][won] += chance * table[game + 1][won - 1]
+    return table
+
+
+def _draw_wins(chances, table, wins, rng):
+    """Which games were won, given that exactly `wins` of them were.
+
+    Walks the games in order, taking each with the chance that a win there still leaves the
+    rest able to supply what remains -- which is the conditional Bernoulli, and reduces to
+    picking a uniform subset when every game is a coin flip.
+    """
+    need = wins
+    for game, chance in enumerate(chances):
+        total = table[game][need]
+        if need <= 0:
+            won = False
+        elif total <= 0:
+            won = True  # the rest cannot supply it, so this one has to
+        else:
+            won = rng.random() < chance * table[game + 1][need - 1] / total
+        if won:
+            need -= 1
+        yield won
+
+
+def _split_scores(gap, cut, total_mean, spread, won, rng):
+    """Two scores that produce a result already decided, without distorting either.
+
+    Equal spreads make the sum of two scores independent of their difference, so the
+    difference is drawn from its own distribution truncated to the side that was forced,
+    the sum is drawn freely, and the two are put back together. The team that was made to
+    win therefore wins the way it would have won anyway -- narrowly if it was an upset --
+    which is what keeps the points it banks honest.
+    """
+    low, high = (cut, 1.0) if won else (0.0, cut)
+    draw = min(max(rng.uniform(low, high), 1e-12), 1 - 1e-12)
+    difference = gap.inv_cdf(draw)
+    total = rng.gauss(total_mean, spread)
+    return (total + difference) / 2, (total - difference) / 2

@@ -14,6 +14,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ..playoffs import PlayoffPicture, TeamOutlook, WinOdds
+from ..strength import MIN_WEEKS
 from ..waivers.status import FREE_AGENT, WAIVERS
 from .advice import AddCandidate, LineupAdvice, PlayerLine
 from .league import LeagueView, TeamCard
@@ -242,6 +243,9 @@ def playoffs_table(view: LeagueView) -> RenderableType:
     grid.add_column("#", justify="right")
     grid.add_column("Team")
     grid.add_column("Rec")
+    scoring = picture.scoring
+    if scoring is not None:
+        grid.add_column("Pts/wk", justify="right")
     grid.add_column("Needs", justify="right")
     grid.add_column("Odds", justify="right")
     grid.add_column("Why", style="dim")
@@ -249,17 +253,20 @@ def playoffs_table(view: LeagueView) -> RenderableType:
         name = names.get(outlook.roster_id, f"Roster {outlook.roster_id}")
         label = Text(name, style="bold" if outlook.roster_id in mine else "")
         cut = outlook.seed <= picture.spots
+        pace = scoring.team(outlook.roster_id) if scoring is not None else None
         grid.add_row(
             Text(str(outlook.seed), style="green" if cut else "dim"),
             label,
             outlook.standing.label,
+            *([Text("—" if pace is None else f"{pace.mean:.0f}", style="dim")]
+              if scoring is not None else []),
             _needs_text(outlook),
             _odds_text(outlook),
             _outlook_why(outlook),
         )
     footer = Text(
         "Needs = wins that clinch a place whatever else happens.  "
-        "Odds = if every game left were a coin flip.",
+        f"Odds = {odds_basis(picture)}.",
         style="dim",
     )
     parts: list[RenderableType] = [grid, footer, Text(), by_wins_table(picture, names, mine)]
@@ -305,6 +312,15 @@ def by_wins_table(picture: PlayoffPicture, names: Mapping[int, str],
     ))
 
 
+def pace_text(picture: PlayoffPicture) -> str:
+    """What the Pts/wk column is, for a footnote. Empty when there is no such column."""
+    scoring = picture.scoring
+    if scoring is None:
+        return ""
+    return ("Pts/wk is what each team is simulated to score: its own scoring and its roster "
+            "on paper, pulled toward the league average by however much of the gap is noise.")
+
+
 def _odds_cell(row: WinOdds) -> Text:
     """One cell, in a column three characters wide.
 
@@ -322,8 +338,39 @@ def _odds_cell(row: WinOdds) -> Text:
         return Text("~100", style="green")
     if row.odds < 0.005:
         return Text("<1", style="dim")
-    return Text(f"{row.odds * 100:.0f}", style="green" if row.odds >= 0.5 else
-                ("dim" if row.odds < 0.1 else ""))
+    return Text(f"{max(1, round(row.odds * 100))}",
+                style="green" if row.odds >= 0.5 else ("dim" if row.odds < 0.1 else ""))
+
+
+def odds_basis(picture: PlayoffPicture) -> str:
+    """What the odds were simulated from, in the words the card shows.
+
+    The odds have been two different things on this card and must never be allowed to look
+    like one. Coin flips are what a league with nothing scored gets; once there are weeks
+    to read, the draws come from what the teams actually score. The sentence says which,
+    and how much of the gap between the teams the data supports -- because a league whose
+    scoring has not separated its teams is back to coin flips, and the card should say so
+    rather than let a reader assume a model is at work.
+    """
+    scoring = picture.scoring
+    if scoring is None:
+        return "if every game left were a coin flip"
+    seasons = f"{picture.trials:,} seasons simulated from "
+    weeks = f"{scoring.weeks} scored week{'s' if scoring.weeks != 1 else ''}"
+    rosters = "the rosters as they stand"
+    if scoring.weeks < MIN_WEEKS:
+        return f"{seasons}{rosters}, with too little scored yet to go on"
+    if scoring.flat:
+        return (f"{seasons}{weeks}, which have not separated these teams at all, so they "
+                "are coin flips in all but name")
+    if not scoring.reliability:
+        # The honest sentence for a league like the second `.env` one: nine weeks of
+        # scoring that a variance decomposition cannot tell from nine weeks of noise.
+        return (f"{seasons}{rosters} — {weeks} have not separated these teams, so only "
+                "the rosters tell them apart")
+    both = f"{weeks} and {rosters}" if scoring.projection_weight else weeks
+    return (f"{seasons}{both}, {scoring.reliability:.0%} of the scoring gap between teams "
+            "holding up")
 
 
 def _needs_text(outlook: TeamOutlook) -> Text:
@@ -390,6 +437,8 @@ def playoffs_json(view: LeagueView) -> dict[str, Any] | None:
     if picture is None:
         return None
     names = {card.roster_id: (card.name, card.manager, card.is_mine) for card in view.teams}
+    pace = ({} if picture.scoring is None
+            else {t.roster_id: round(t.mean, 1) for t in picture.scoring.teams})
     return {
         "spots": picture.spots,
         "final_week": picture.final_week,
@@ -397,6 +446,16 @@ def playoffs_json(view: LeagueView) -> dict[str, Any] | None:
         "games_left": picture.games_left,
         "trials": picture.trials,
         "notes": list(picture.notes),
+        "basis": odds_basis(picture),
+        "pace_note": pace_text(picture),
+        "scoring": None if picture.scoring is None else {
+            "weeks": picture.scoring.weeks,
+            "reliability": round(picture.scoring.reliability, 3),
+            "league_mean": round(picture.scoring.league_mean, 1),
+            "sd": round(picture.scoring.sd, 1),
+            "projection_weight": picture.scoring.projection_weight,
+            "flat": picture.scoring.flat,
+        },
         "teams": [
             {
                 "roster_id": outlook.roster_id,
@@ -417,6 +476,7 @@ def playoffs_json(view: LeagueView) -> dict[str, Any] | None:
                 "eliminated": outlook.eliminated,
                 "in_places": outlook.seed <= picture.spots,
                 "odds": round(outlook.odds, 4),
+                "pace": pace.get(outlook.roster_id),
                 "by_wins": [
                     {
                         "wins": row.wins,

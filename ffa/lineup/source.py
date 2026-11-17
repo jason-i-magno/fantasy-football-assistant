@@ -18,8 +18,8 @@ import httpx
 
 from ..espn import week_kickoffs
 from ..espn_fantasy import ESPNFantasyError, ESPNPlayer, fetch_weeks
-from ..models import Player
-from ..playoffs import regular_season_end, undecided_weeks
+from ..models import Player, to_int
+from ..playoffs import regular_season_end, scored_weeks, undecided_weeks
 from ..projections import LAST_WEEK, Projection, build, playoff_weeks, window_per_game
 from ..sleeper import SleeperClient
 from ..waivers.status import LAST_REGULAR_WEEK, build_report
@@ -163,6 +163,13 @@ def load_advice(
         for w in undecided_weeks(settings, final_week=regular_season_end(settings))
     }
     matchups = schedule.get(week) or _matchups(client, league_id, week)
+    # And the weeks already played, which is what each team actually scores. Eight more
+    # cached requests, and the only thing that stops the playoff odds flipping a coin for
+    # a 150-a-week team against a 100-a-week one.
+    history = {
+        w: _week_points(_matchups(client, league_id, w))
+        for w in scored_weeks(settings, final_week=regular_season_end(settings))
+    }
     starters = _starters_for_week(matchups, user_id, rosters)
 
     kwargs = {} if max_adds is None else {"max_adds": max_adds}
@@ -176,7 +183,7 @@ def load_advice(
         matchups=matchups, projections=projections, players=players, week=week,
         kickoffs=kickoffs, now=now, my_roster_id=advice.roster_id,
         horizon=Horizon(rest_weeks=len(rest), playoff_weeks=len(window)),
-        schedule=schedule,
+        schedule=schedule, history=history,
     )
     return advice, view, sources
 
@@ -189,6 +196,16 @@ def _final_week(settings: Mapping) -> int:
     """
     weeks = playoff_weeks(settings)
     return max(weeks) if weeks else LAST_WEEK
+
+
+def _week_points(entries: Sequence[Mapping]) -> dict[int, float]:
+    """One week's scores by roster. A roster with no entry simply isn't in it."""
+    out: dict[int, float] = {}
+    for entry in entries:
+        roster_id = to_int(entry.get("roster_id"))
+        if roster_id is not None:
+            out[roster_id] = float(entry.get("points") or 0.0)
+    return out
 
 
 def _matchups(client: SleeperClient, league_id: str, week: int) -> list[dict]:

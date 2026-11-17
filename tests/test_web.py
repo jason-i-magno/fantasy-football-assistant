@@ -7,6 +7,8 @@ is fed a recording, and the waivers feed gets the same `FakeSleeper` the CLI tes
 from pathlib import Path
 
 import httpx
+
+from ffa import playoffs as P
 import pytest
 
 from ffa.config import load_config
@@ -457,13 +459,16 @@ def _advice_loader(calls):
         schedule = {week: [{"roster_id": 3, "matchup_id": 1, "points": 0.0},
                            {"roster_id": 4, "matchup_id": 1, "points": 0.0}]
                     for week in (9, 10)}
+        # Eight weeks of scores behind them, so the payload carries what the odds were
+        # drawn from rather than the coin flip it used to be.
+        history = {week: {3: 110.0 + week, 4: 100.0 - week} for week in range(1, 9)}
         view = build_league_view(
             league=racing, rosters=standing_rosters,
             users=[{"user_id": "u1", "display_name": "me",
                     "metadata": {"team_name": "My Team"}}],
             matchups=[], projections=world["projections"], players=world["players"],
             week=world["week"], kickoffs=world["kickoffs"], now=world["now"],
-            my_roster_id=advice.roster_id, schedule=schedule,
+            my_roster_id=advice.roster_id, schedule=schedule, history=history,
         )
         return advice, view, LineupSources(sleeper=True, espn=True)
 
@@ -511,6 +516,15 @@ def test_lineup_payload_carries_the_whole_screen(recording):
     assert [cell["record"] for cell in leader["by_wins"]] == ["5", "6", "7"]
     assert [cell["certain"] for cell in leader["by_wins"]] == [False, True, True]
     assert [cell["impossible"] for cell in chaser["by_wins"]] == [True, True, False]
+
+    # What the odds were drawn from travels with them, because "45%" means two different
+    # things depending on the answer and the phone has to be able to say which.
+    assert race["scoring"]["weeks"] == 8
+    assert "scored week" in race["basis"] and race["trials"] in (0, P.ODDS_TRIALS)
+    assert isinstance(leader["pace"], float)
+    # Two teams are not a spread: there is nothing to estimate from a gap of one pair, so
+    # the estimator claims nothing and says so.
+    assert race["scoring"]["reliability"] == 0.0 and race["scoring"]["flat"] is True
 
 
 def test_one_build_serves_every_screen(recording):

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 uv sync                                          # install deps into .venv
-uv run pytest                                    # full suite, offline, ~1.5s
+uv run pytest                                    # full suite, offline, ~8s
 uv run pytest tests/test_board.py::test_name     # one test (or -k PATTERN)
 uv run ffa draft replay tests/fixtures/replay_mock_12team.jsonl --snapshot 2   # offline smoke test of the whole pipeline
 uv run ffa draft doctor                          # live: validate .env, resolve IDs, dump raw draft settings
@@ -48,9 +48,12 @@ those as a web app for a phone on the same network).
   `advice.player_line` so a rival's card cannot drift from your own.
 - `ffa/scoring.py`, `ffa/projections.py`, `ffa/espn_fantasy.py`, `ffa/roster.py`: the
   projection layer, shared because more than one tool needs points and slot rules.
-- `ffa/playoffs.py`: the playoff race (see below). Pure arithmetic over a table and a
-  schedule, with no idea what a projection is, which is why it is here and not in
-  `lineup/`.
+- `ffa/playoffs.py`: the playoff race (see below). Pure arithmetic over a table, a
+  schedule and -- since the odds stopped being coin flips -- a mean and a spread per team.
+  It never learns where those came from, which is why it is here and not in `lineup/`.
+- `ffa/strength.py`: what each team scores a week and how much of that is signal (see
+  below). Also pure: weekly scores in, a `Scoring` out, and a `backtest` that replays a
+  season against itself.
 - `ffa/leagues.py`: the configured leagues (`SLEEPER_LEAGUE_IDS`) and name lookup, so
   `--league <name>` works and the phone shows chips instead of nineteen-digit ids. Names come
   from Sleeper, never from config: a second place to keep a name is a second place for it
@@ -191,6 +194,20 @@ schedule and a number of places in, a `PlayoffPicture` out. `lineup/league.py::r
 only thing that assembles it from Sleeper payloads, and it rides on the lineup build, so the
 League tab and `ffa lineup --teams` draw the same numbers.
 
+- **The odds are drawn from what the teams score, when there is anything to draw from.**
+  `ffa/strength.py` is the model and `## Scoring` below is the whole of it. Everything the
+  race does with it is in `_score_trials`: two scores a game, the higher one takes the win,
+  and both go into the points-for that breaks ties. That last part is half the point --
+  the old simulation froze the tiebreak at the points already scored, so a team 30 behind
+  on points-for lost every simulated tie for the rest of the season. With no scoring to go
+  on (week one, or a hand-made fixture) `scoring` is None and every game is a coin flip,
+  which is the old behaviour exactly, tests and all.
+- **The guaranteed numbers never see the model.** `wins_to_clinch` and `wins_to_survive`
+  are arithmetic over the schedule and have no probability in them at all. That is the
+  point of having two instruments: a scoring model that turns out to be wrong moves the
+  odds and cannot touch the Needs column. `build_picture` solves them first for a second
+  reason -- a by-wins cell the arithmetic settles is one the sampler should not spend a
+  trial on.
 - **Two numbers, never one.** `wins_to_clinch` is arithmetic: the wins that take a place
   whatever else happens. `odds` is a coin-flip simulation. They disagree constantly -- an
   8-0 team needs one win to be *certain* and is at ~100% without it -- and conflating them
@@ -235,9 +252,72 @@ League tab and `ffa lineup --teams` draw the same numbers.
   team also scored against the weekly median) is a second result a week, and divisions seed
   their winners ahead of the table. Both would make the numbers wrong rather than
   approximate, so `unsupported` returns a reason and the card shows it instead of a table.
+- **A thin by-wins cell is drawn again rather than left thin.** Coin flips spread a
+  five-game run 312/1562/3125/3125/1562/312; once the teams have different strengths, the
+  best team in a real league loses all five in 34 trials of ten thousand, and that cell is
+  exactly the one a manager goes looking for. `_stratum` re-draws any unsettled cell under
+  `MIN_BUCKET_TRIALS`, conditioning exactly rather than by rejection: `_draw_wins` picks
+  which games were won from the conditional Bernoulli (a team that wins three of five most
+  likely won the three it was favoured in), and `_split_scores` draws the scores behind a
+  forced result -- a win without its scores would hand a team a record it did not score the
+  points for, and the points are what breaks the tie. Equal spreads make a pair's sum
+  independent of its difference, which is what lets the difference be truncated to the
+  side that was forced and the two put back together. The topped-up cells are no longer the
+  same sample as the headline odds; `test_a_cell_drawn_again_agrees_with_the_one_it_replaces`
+  is what says the two estimators still agree.
 - `tests/test_playoffs.py` keeps a brute-force cross-check: small leagues played out over
   every one of their 2^games outcomes, with the flow required to agree. There is no simpler
   correct implementation to check against, so there is an independent one.
+
+## Scoring
+
+`ffa/strength.py` answers "how much does this team score, and how much of that is real".
+The second half is the whole module. Measured the same week on the two `.env` leagues:
+
+| | league A | league B |
+|---|---|---|
+| spread of team scoring averages | 14.4 | 8.4 |
+| week-to-week noise within a team | 21.5 | 26.3 |
+| share of the gap that is signal | 72% | 0% |
+| higher scorer won, out of sample | 21/25 | 15/30 |
+
+- **League B's teams are not far apart; nine weeks of randomness are.** A spread of 8.4 is
+  what ten identical teams produce over nine weeks, and out of sample it called games at
+  exactly 50%. Nothing in a table says which league you are looking at, so `estimate`
+  measures it: the spread you can see is the real spread plus `within / weeks` of noise, so
+  taking the noise out leaves `reliability`, and each team's average is pulled toward the
+  league's by whatever fraction survives. League B's teams collapse onto one number and the
+  odds go back to coin flips without anyone deciding that by hand. Do not replace this with
+  a raw average, however tempting its simplicity: that is the version that would have told
+  this user his 8.4-point edge was worth something.
+- **Two channels, because each is blind to what the other sees.** Scored weeks know how a
+  manager actually sets his lineup; they cannot see that his back tore an ACL on Sunday.
+  The projections see exactly that and nothing else. `lineup/league.py` solves each roster's
+  best lineup on the rest-of-season rate for the second channel, which is one more call to
+  the same solver.
+- **The blend is an average of two estimates, not a discount applied twice.** The scoring
+  term is shrunk because its own noise was measured; the projected term is taken as it
+  comes, because measurement says it needs no shrinking -- in league A the projected edges
+  spread 8.8 against a latent spread of 11.1, projections being conservative on their own.
+  The two channels then contribute about equally (sd 4.7 and 4.4 of the 8.6 the model ends
+  up with). Re-measure that before giving the projections more weight.
+- **Both channels are centred before they are blended, so the level comes from the scores
+  alone.** A projected *best* lineup is worth more than anyone scores, because every manager
+  leaves something on his bench; centring cancels a bias no data here can measure.
+  `PROJECTION_WEIGHT` is the one number nothing available can settle -- it would take a
+  season of stored projections, and this tool stores none -- so half each is the honest
+  statement of not knowing, and it is a constant rather than an edit.
+- **One spread for every team.** Eight games cannot tell a volatile roster from a steady
+  one, and a per-team variance off eight games would be noise with a name on it. It is also
+  what makes `_split_scores` exact.
+- **`backtest` is the acceptance test and lives in the library, not in a notebook.** It
+  replays the season, estimating from the weeks before each one, and scores the result
+  against the 0.25 of a coin flip. It validates the *scoring* channel only: nothing stores
+  what the projections said in week 3, so the roster channel cannot be replayed and its
+  weight rests on the measurement above rather than on a score. Run it on a real league before trusting any change here:
+  on league A it scored 0.188 (25% of the coin flip's error removed, favourite winning 90%
+  of 20 games); on league B it scored exactly 0.25, which is the estimator declining to
+  guess and the right outcome there.
 
 ## Web app
 
@@ -261,7 +341,10 @@ team's odds at every win total still open to it -- then a picker for one team's 
   client caches rosters, transactions and the NFL state for its own lifetime, which is
   right for a one-shot command and wrong for a server that stays up for days. `LineupFeed`
   caches for ten minutes and builds synchronously: a cold build measured about 4s, most
-  of it ESPN, which is a better trade than a worker thread and a progress protocol.
+  of it ESPN, which is a better trade than a worker thread and a progress protocol. The
+  weeks already played, for the scoring model, are eight more cached requests and 0.17s of
+  that -- measure this sort of thing rather than diffing two timed builds, because the run
+  to run spread on a cold build is five times the number being looked for.
 - The league picker is one control in the header, shared by the lineup and waivers tabs,
   because two controls for one choice is one of them being wrong. It is hidden on the draft
   tab, which follows `DRAFT_ID` instead.
@@ -323,6 +406,11 @@ mixups). Fixtures in `tests/fixtures/`:
   `python tests/fixtures/build_synthetic_replay.py`, which computes pick order on its own
   (it deliberately doesn't import `ffa.draft.board`) so it stays an independent check.
 - `players_nfl.json`: a trimmed `/players/nfl` response, produced by `trim_players.py`.
+
+`tests/test_strength.py` is mostly about league B above: a model that cannot report "there
+is nothing here" dresses noise up as a forecast, which on this card would be worse than the
+coin flip it replaced. It checks the estimator on synthetic seasons whose true spread is
+known, including one with no spread at all.
 
 The lineup tests are hand-made rather than recorded: `tests/test_lineup.py` builds a roster
 from tuples, so no real league data is involved and each test pins one way a feed or a
