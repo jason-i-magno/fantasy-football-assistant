@@ -23,13 +23,15 @@ playoff-window number free: weeks 15 to 17 are already in the payload fetched fo
 
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from functools import partial
+from typing import Any, NamedTuple
 
 import httpx
 
 from . import __version__
+from .fanout import gather
 
 log = logging.getLogger(__name__)
 
@@ -117,17 +119,31 @@ def _filter_header(offset: int, limit: int) -> str:
     )
 
 
-def _week_stats(raw: Mapping[str, Any], season: int, week: int) -> dict[str, Any] | None:
-    """The projected stat row for one week, with the season pinned."""
+def _weekly_stats(raw: Mapping[str, Any], season: int,
+                  weeks: Iterable[int]) -> dict[int, dict[str, Any]]:
+    """The projected stat rows for several weeks, from one pass over the player's stats.
+
+    A player carries a few dozen stat rows and this used to be walked once per week asked
+    for, which over a thousand players and five weeks is most of a second spent re-reading
+    the same list. First match wins, as it did when each week scanned alone.
+    """
+    wanted = set(weeks)
+    found: dict[int, dict[str, Any]] = {}
     for entry in raw.get("stats") or ():
+        week = entry.get("scoringPeriodId")
         if (
-            entry.get("statSourceId") == PROJECTED
+            week in wanted
+            and entry.get("statSourceId") == PROJECTED
             and entry.get("statSplitTypeId") == SEASON_SPLIT
-            and entry.get("scoringPeriodId") == week
             and entry.get("seasonId") == season
         ):
-            return entry
-    return None
+            found.setdefault(week, entry)
+    return found
+
+
+def _week_stats(raw: Mapping[str, Any], season: int, week: int) -> dict[str, Any] | None:
+    """The projected stat row for one week, with the season pinned."""
+    return _weekly_stats(raw, season, (week,)).get(week)
 
 
 def translate_stats(espn_stats: Mapping[str, Any] | None) -> dict[str, float]:
@@ -151,24 +167,67 @@ def translate_stats(espn_stats: Mapping[str, Any] | None) -> dict[str, float]:
     return out
 
 
-def parse_player(row: Mapping[str, Any], season: int, week: int) -> ESPNPlayer | None:
-    """One `players[]` entry, or None when it has no usable identity or position."""
+class _Identity(NamedTuple):
+    """The half of a row that does not change with the week."""
+
+    raw: Mapping[str, Any]
+    espn_id: str
+    name: str
+    position: str
+    team: str | None
+
+
+def _identity(row: Mapping[str, Any]) -> _Identity | None:
+    """Who this row is, or None when it has no usable identity or position."""
     raw = row.get("player") or {}
     position = POSITIONS.get(raw.get("defaultPositionId"))
     espn_id = row.get("id")
     if position is None or espn_id is None:
         return None
-    entry = _week_stats(raw, season, week)
-    team = PRO_TEAMS.get(raw.get("proTeamId"))
-    applied = entry.get("appliedTotal") if entry else None
-    return ESPNPlayer(
+    return _Identity(
+        raw=raw,
         espn_id=str(espn_id),
         name=str(raw.get("fullName") or "").strip(),
         position=position,
-        team=team,
+        team=PRO_TEAMS.get(raw.get("proTeamId")),
+    )
+
+
+def _player_for(who: _Identity, entry: Mapping[str, Any] | None) -> ESPNPlayer:
+    applied = entry.get("appliedTotal") if entry else None
+    return ESPNPlayer(
+        espn_id=who.espn_id,
+        name=who.name,
+        position=who.position,
+        team=who.team,
         stats=translate_stats(entry.get("stats") if entry else None),
         applied_total=float(applied) if isinstance(applied, (int, float)) else None,
     )
+
+
+def parse_player(row: Mapping[str, Any], season: int, week: int) -> ESPNPlayer | None:
+    """One `players[]` entry, or None when it has no usable identity or position."""
+    who = _identity(row)
+    return None if who is None else _player_for(who, _week_stats(row.get("player") or {}, season, week))
+
+
+def _page(client: httpx.Client, url: str, week: int, offset: int,
+          page_size: int) -> list[Any]:
+    """One page of the player feed, as rows. An empty page ends the walk."""
+    try:
+        response = client.get(
+            url,
+            params={"view": "kona_player_info", "scoringPeriodId": week},
+            headers={"X-Fantasy-Filter": _filter_header(offset, page_size)},
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.HTTPError as exc:
+        raise ESPNFantasyError(f"Could not reach ESPN for week {week} projections: {exc}") from exc
+    except ValueError as exc:
+        raise ESPNFantasyError(f"ESPN sent invalid JSON for week {week} projections.") from exc
+    rows = payload.get("players") if isinstance(payload, dict) else None
+    return rows if isinstance(rows, list) else []
 
 
 def fetch_weeks(
@@ -195,30 +254,35 @@ def fetch_weeks(
     url = PLAYER_FEED_URL.format(season=season)
     out: dict[int, list[ESPNPlayer]] = {week: [] for week in wanted}
     first = wanted[0]
+    budget = max(1, pages)
     try:
-        for page in range(max(1, pages)):
-            offset = page * page_size
-            try:
-                response = client.get(
-                    url,
-                    params={"view": "kona_player_info", "scoringPeriodId": first},
-                    headers={"X-Fantasy-Filter": _filter_header(offset, page_size)},
-                )
-                response.raise_for_status()
-                payload = response.json()
-            except httpx.HTTPError as exc:
-                raise ESPNFantasyError(f"Could not reach ESPN for week {first} projections: {exc}") from exc
-            except ValueError as exc:
-                raise ESPNFantasyError(f"ESPN sent invalid JSON for week {first} projections.") from exc
-            rows = payload.get("players") if isinstance(payload, dict) else None
+        # Every page asks the same question with a different offset, so the rest go
+        # together once the first has said there is a rest: five pages took 0.81s one
+        # after another and 0.47s this way. The first page is still fetched alone,
+        # because a pool smaller than one page is the case where asking for five would
+        # be four requests to someone else's server for nothing -- and that case is a
+        # test, not a hypothetical.
+        fetched = {0: _page(client, url, first, 0, page_size)}
+        if budget > 1 and len(fetched[0]) >= page_size:
+            fetched.update(gather({
+                page: partial(_page, client, url, first, page * page_size, page_size)
+                for page in range(1, budget)
+            }))
+        for page in range(budget):
+            rows = fetched.get(page) or ()
             if not rows:
                 break
             for row in rows:
                 if not isinstance(row, dict):
                     continue
+                who = _identity(row)
+                if who is None:
+                    continue
+                # One pass over this player's stats for every week asked for, rather than
+                # one pass per week: the row is read once and sliced.
+                entries = _weekly_stats(who.raw, season, wanted)
                 for week in wanted:
-                    if (parsed := parse_player(row, season, week)) is not None:
-                        out[week].append(parsed)
+                    out[week].append(_player_for(who, entries.get(week)))
             if len(rows) < page_size:
                 break
     finally:

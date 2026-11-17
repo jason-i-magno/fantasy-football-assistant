@@ -54,6 +54,10 @@ those as a web app for a phone on the same network).
 - `ffa/strength.py`: what each team scores a week and how much of that is signal (see
   below). Also pure: weekly scores in, a `Scoring` out, and a `backtest` that replays a
   season against itself.
+- `ffa/fanout.py`: `gather`, which runs independent fetches at once and keeps the loop's
+  promises -- keyed results, the first exception by key rather than by whichever thread
+  lost, and nothing still running when it returns. Used wherever a build was waiting on
+  requests in turn (see below).
 - `ffa/leagues.py`: the configured leagues (`SLEEPER_LEAGUE_IDS`) and name lookup, so
   `--league <name>` works and the phone shows chips instead of nineteen-digit ids. Names come
   from Sleeper, never from config: a second place to keep a name is a second place for it
@@ -108,6 +112,19 @@ agent: check any new rule in that direction too.
 is pure and does the thinking, `optimal.py` solves, `ui.py` renders. The rules that are easy
 to get wrong, in the order they bite:
 
+- **The build is one wave, not a queue.** A cold build measured 5.07s, of which 3.5s was
+  requests waiting their turn for nothing: five pages of ESPN's player feed, a scoreboard
+  per week, a Sleeper projection per week still to be played, a matchup per week already
+  played. Nothing in that list needs anything from anything else in it, so it all goes
+  through `fanout.gather` at once -- 2.86s now, and *fewer* requests than before (38
+  against 41), because the scoreboards the waiver report wants are handed to it rather
+  than fetched again. Two things to keep in mind when adding a fetch here. The soft
+  failure for ESPN lives inside its job (`_espn_or_reason`), because a fan-out raises the
+  first exception any job raised and losing a second opinion must not lose the build. And
+  the jobs are keyed `(feed, week)` so that no two of them can ask for the same cached
+  response at the same time -- `SleeperClient`'s cache is check-then-set, which races into
+  a wasted request rather than a wrong answer, but a wasted request is the thing being
+  removed.
 - **The target week is the earliest with a game still to kick off**, not Sleeper's
   `nfl_state.week` (which read 9 while the app still showed week 8) and not "the first week
   with nothing started" (which would skip to next week halfway through a Sunday). Say which
@@ -340,8 +357,10 @@ team's odds at every win total still open to it -- then a picker for one team's 
 - `WaiversFeed` and `LineupFeed` build each report with a *fresh* `SleeperClient`: that
   client caches rosters, transactions and the NFL state for its own lifetime, which is
   right for a one-shot command and wrong for a server that stays up for days. `LineupFeed`
-  caches for ten minutes and builds synchronously: a cold build measured about 4s, most
-  of it ESPN, which is a better trade than a worker thread and a progress protocol. The
+  caches for ten minutes and builds synchronously: a cold build measured about 2.9s, most
+  of it ESPN, which is a better trade than a worker thread and a progress protocol. It was
+  5.1s until the fetches were made to overlap (see Lineup above); the phone says "working
+  it out…" for exactly that long, so measure before adding anything to the wave. The
   weeks already played, for the scoring model, are eight more cached requests and 0.17s of
   that -- measure this sort of thing rather than diffing two timed builds, because the run
   to run spread on a cold build is five times the number being looked for.
@@ -376,6 +395,10 @@ team's odds at every win total still open to it -- then a picker for one team's 
 - Tunable shortlist weights are named constants at the top of `draft/scarcity.py`.
 - Recordings are JSON Lines (header, then snapshots) tagged `"draftbot-recording/1"`. Keep
   that tag: existing recordings depend on it.
+- The ESPN player feed is paged. The first page is fetched alone and the rest together,
+  because a pool smaller than one page is the one case where asking for all five would be
+  four requests for nothing -- and a row is parsed once for every week asked for, not once
+  per week, which was most of a second spent re-reading the same stat list.
 - **ESPN's projection feed has three traps**, all in the `ffa/espn_fantasy.py` docstring:
   any `filterStatsFor*` key in `X-Fantasy-Filter` silently strips the projections and
   returns only actuals; the payload carries two seasons, so `seasonId` must be pinned or you
