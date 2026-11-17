@@ -19,7 +19,7 @@ import httpx
 
 from ..espn import week_kickoffs
 from ..espn_fantasy import ESPNFantasyError, ESPNPlayer, fetch_weeks
-from ..fanout import gather
+from ..fanout import gather, start
 from ..models import Player, to_int
 from ..playoffs import regular_season_end, scored_weeks, undecided_weeks
 from ..projections import LAST_WEEK, Projection, build, playoff_weeks, window_per_game
@@ -79,6 +79,26 @@ def load_advice(
     # 9 while the app still showed week 8.
     base = to_int(state.get("week")) or 1
 
+    # The league first, because the ESPN window below needs to know the last week this
+    # league plays -- one cached request, and it is wanted a few lines later regardless.
+    league = client.league(league_id)
+    scoring = league.get("scoring_settings") or {}
+    if not scoring:
+        raise LineupUnavailable("This league publishes no scoring settings, so nothing can be projected.")
+    settings = league.get("settings") or {}
+
+    # ESPN's player feed is the longest single thing in a build, and the only one that
+    # does not need to know the target week: it needs a *floor* for the weeks to read, and
+    # no kickoff can put us earlier than the week before Sleeper's. Started here and
+    # collected at the end, it runs underneath the rest of the build instead of after it.
+    # The weeks read out of it are sliced by the real target week once that is known, so
+    # this is a wider net and never a different answer -- checked against ESPN: the same
+    # request carrying a different `scoringPeriodId` returns identical rows for every week
+    # either one asks about.
+    fetch_espn = espn_for or (lambda s, w: fetch_weeks(s, w, http=http))
+    espn_window = tuple(range(max(1, base - 1), _final_week(settings) + 1)) or (base,)
+    espn_ready = start(partial(_espn_or_reason, fetch_espn, season, espn_window))
+
     # Every scoreboard at once -- a quarter of a second each, and they were fetched one
     # week at a time. The waiver report wants three of these same weeks, so it is handed
     # what has already been fetched instead of asking ESPN again: running it alongside
@@ -102,11 +122,6 @@ def load_advice(
         )
     kickoffs = schedules[week]
 
-    league = client.league(league_id)
-    scoring = league.get("scoring_settings") or {}
-    if not scoring:
-        raise LineupUnavailable("This league publishes no scoring settings, so nothing can be projected.")
-
     raw_players, _ = client.players()
     players = {
         pid: player
@@ -118,7 +133,6 @@ def load_advice(
     # a separate question from the rest of the season -- a player can be worth a point a
     # week in one and nothing in the other, because the schedule is different -- and
     # neither of them is Sleeper's season row, which was written in August.
-    settings = league.get("settings") or {}
     window = tuple(w for w in playoff_weeks(settings) if w >= week)
     rest = tuple(range(week, _final_week(settings) + 1))
     open_weeks = undecided_weeks(settings, final_week=regular_season_end(settings))
@@ -129,9 +143,7 @@ def load_advice(
     # for each week still to be played, the fixtures still to come, and the scores already
     # in -- and waiting for each in turn was most of a cold build. Keys are distinct, so
     # no two jobs race for the same cached response.
-    fetch_espn = espn_for or (lambda s, w: fetch_weeks(s, w, http=http))
     jobs: dict[tuple[str, int], Callable[[], object]] = {
-        ("espn", 0): partial(_espn_or_reason, fetch_espn, season, rest or (week,)),
         ("season", 0): partial(client.projections_season, str(season)),
     }
     jobs.update({("sleeper", w): partial(client.projections_week, str(season), w)
@@ -145,7 +157,9 @@ def load_advice(
         jobs[("fixture", week)] = partial(_matchups, client, league_id, week)
     done = gather(jobs, workers=FETCH_WORKERS)
 
-    espn_weeks, espn_error = done[("espn", 0)]
+    # Collected last: by now it has had the scoreboards, the report and the whole wave
+    # above to finish in.
+    espn_weeks, espn_error = espn_ready()
     sleeper_by_week = {w: done[("sleeper", w)] for w in rest}
     sleeper_week = sleeper_by_week.get(week) or client.projections_week(str(season), week)
     sleeper_season = done[("season", 0)]
