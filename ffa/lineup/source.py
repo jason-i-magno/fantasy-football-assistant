@@ -79,18 +79,21 @@ def load_advice(
     # 9 while the app still showed week 8.
     base = to_int(state.get("week")) or 1
 
-    # The report and the scoreboards want the same weeks between them and nothing from each
-    # other, so they all go at once: a scoreboard was a quarter of a second, fetched one
-    # week at a time, and the report spent most of its second on three of them.
-    kickoffs_once = _memoize_weeks(kickoffs_for)
+    # Every scoreboard at once -- a quarter of a second each, and they were fetched one
+    # week at a time. The waiver report wants three of these same weeks, so it is handed
+    # what has already been fetched instead of asking ESPN again: running it alongside
+    # them instead only looked faster, because both halves then raced for week 9 and
+    # fetched it twice.
     wanted = range(max(1, base - 1), min(LAST_REGULAR_WEEK, base + WEEKS_AHEAD) + 1)
-    prelude: dict[tuple[str, int], Callable[[], object]] = {
-        ("report", 0): partial(build_report, client, league_id, now, kickoffs_once),
-    }
-    prelude.update({("kick", w): partial(kickoffs_once, season, w) for w in wanted})
-    opened = gather(prelude, workers=FETCH_WORKERS)
-    report = opened[("report", 0)]
-    schedules = {w: opened[("kick", w)] for w in wanted}
+    schedules = gather({w: partial(kickoffs_for, season, w) for w in wanted})
+
+    def kickoffs_in_hand(for_season: int, for_week: int) -> Mapping[str, datetime]:
+        """A week already fetched, or a request for one nobody expected to be asked for."""
+        if for_season == season and for_week in schedules:
+            return schedules[for_week]
+        return kickoffs_for(for_season, for_week)
+
+    report = build_report(client, league_id, now, kickoffs_in_hand)
     week = target_week(schedules, now)
     if week is None:
         raise LineupUnavailable(
@@ -216,26 +219,6 @@ def _final_week(settings: Mapping) -> int:
     """
     weeks = playoff_weeks(settings)
     return max(weeks) if weeks else LAST_WEEK
-
-
-def _memoize_weeks(fetch: Callable[[int, int], Mapping[str, datetime]]):
-    """One scoreboard per week for the life of a build, shared across threads.
-
-    The report asks for three weeks and the lineup for five, overlapping in all three, so
-    without this the same scoreboard is fetched twice while both are in flight. Two threads
-    missing at once fetch twice and keep one answer, which is a wasted request and never a
-    wrong one -- the alternative is holding a lock across somebody else's network call.
-    """
-    seen: dict[tuple[int, int], Mapping[str, datetime]] = {}
-
-    def once(season: int, week: int) -> Mapping[str, datetime]:
-        key = (season, week)
-        hit = seen.get(key)
-        if hit is None:
-            hit = seen.setdefault(key, fetch(season, week))
-        return hit
-
-    return once
 
 
 def _espn_or_reason(fetch, season: int, weeks: Sequence[int]):
