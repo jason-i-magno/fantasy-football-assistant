@@ -119,7 +119,9 @@ to get wrong, in the order they bite:
   played. Nothing in that list needs anything from anything else in it, so it all goes
   through `fanout.gather` at once -- and *fewer* requests than before (38 against 41),
   because the scoreboards the waiver report wants are handed to it rather than fetched
-  again. 5.07s to 1.46s, medians of cold builds against a real league. Three things that
+  again. 5.07s to 1.30s, medians of cold builds against a real league. Past that point the
+  measured breakdown is: ESPN's revalidated feed 0.23s of the critical path, the Sleeper
+  wave about 0.5s, and 0.5s of CPU after it -- there is no single pole left to pull. Three things that
   each looked small and were not: the waiver report belongs *in* the wave, since nothing
   before the advice reads it; the pool needs room for the whole wave, because one slow job
   in each of six slots leaves the other sixteen queued (six at a time measured 1.51s
@@ -131,13 +133,16 @@ to get wrong, in the order they bite:
   response at the same time -- `SleeperClient`'s cache is check-then-set, which races into
   a wasted request rather than a wrong answer, but a wasted request is the thing being
   removed.
-- **ESPN's feed starts before the target week is known.** It is the longest single thing
-  in a build and the only one that does not need the week -- it needs a *floor* for which
-  weeks to read, and no kickoff can land earlier than the week before Sleeper's. So it is
-  started with `fanout.start` at the top and collected at the end, running underneath the
-  scoreboards, the waiver report and the whole wave rather than after them: 2.86s to
-  2.44s, and the spread between builds narrows because ESPN's latency is no longer on the
-  critical path. Two things make that safe, and both were checked rather than assumed.
+- **Nothing waits for the target week that does not have to.** The week is decided by the
+  kickoffs, which is a round trip to ESPN's scoreboard, and almost nothing in the build
+  actually needs it: the fixtures and the scored weeks come from the league's settings,
+  the waiver report brings its own weeks, and both projection feeds can be asked for every
+  week a kickoff could possibly land on -- `forward_weeks`, from the week before Sleeper's
+  through the league's last -- and sliced once the week is known. So the scoreboards and
+  ESPN's feed are both started with `fanout.start` and collected at the end, and the week
+  is settled *after* the wave rather than before it. The over-fetch is one or two small
+  weekly requests; waiting for it was a whole round trip, 0.29s of every build.
+  Two things make that safe, and both were checked rather than assumed.
   The same request carrying a different `scoringPeriodId` returns identical rows for every
   week either one asks about, so a wider net is never a different answer. And the window
   is sliced afterwards by the real target week, which is only sound because `target_week`
@@ -389,8 +394,8 @@ team's odds at every win total still open to it -- then a picker for one team's 
 - `WaiversFeed` and `LineupFeed` build each report with a *fresh* `SleeperClient`: that
   client caches rosters, transactions and the NFL state for its own lifetime, which is
   right for a one-shot command and wrong for a server that stays up for days. `LineupFeed`
-  caches for ten minutes and builds synchronously: a cold build measured about 1.5s with
-  the ESPN pages revalidated and 1.95s with that cache empty, which is a better trade than
+  caches for ten minutes and builds synchronously: a cold build measured about 1.3s with
+  the ESPN pages revalidated and about 1.9s with that cache empty, which is a better trade than
   a worker thread and a progress protocol. It was 5.1s until the
   fetches were made to overlap and ESPN's was started first (see Lineup above); the phone
   says "working it out…" for exactly that long, so measure before adding anything to the
