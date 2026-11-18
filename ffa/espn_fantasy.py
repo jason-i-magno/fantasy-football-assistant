@@ -256,18 +256,18 @@ def fetch_weeks(
     first = wanted[0]
     budget = max(1, pages)
     try:
-        # Every page asks the same question with a different offset, so the rest go
-        # together once the first has said there is a rest: five pages took 0.81s one
-        # after another and 0.47s this way. The first page is still fetched alone,
-        # because a pool smaller than one page is the case where asking for five would
-        # be four requests to someone else's server for nothing -- and that case is a
-        # test, not a hypothetical.
-        fetched = {0: _page(client, url, first, 0, page_size)}
-        if budget > 1 and len(fetched[0]) >= page_size:
-            fetched.update(gather({
-                page: partial(_page, client, url, first, page * page_size, page_size)
-                for page in range(1, budget)
-            }))
+        # Every page asks the same question with a different offset, so they all go at
+        # once. This used to fetch the first alone and the rest only if it came back
+        # full, which saved four requests in a case that never happens -- ESPN's pool is
+        # a thousand players deep every week of the season -- and cost 0.66s of every
+        # single build, measured inside one, because the first page is as slow as the
+        # other four together. The budget is therefore what is *fetched*, not a ceiling
+        # a short page cuts short; the loop below still stops reading at a short page,
+        # which is what decides the answer.
+        fetched = gather({
+            page: partial(_page, client, url, first, page * page_size, page_size)
+            for page in range(budget)
+        })
         for page in range(budget):
             rows = fetched.get(page) or ()
             if not rows:

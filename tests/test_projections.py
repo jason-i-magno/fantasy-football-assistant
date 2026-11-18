@@ -90,19 +90,41 @@ def test_the_request_carries_no_stats_filter():
     assert not any(key.startswith("filterStatsFor") for key in sent["players"])
 
 
-def test_paging_stops_when_a_page_comes_back_short():
+def test_reading_stops_at_a_page_that_comes_back_short():
+    """The short page ends the walk, and nothing after it is read.
+
+    The pages are fetched together rather than one at a time -- the first is as slow as
+    the other four put together, and fetching it alone cost two thirds of a second of
+    every lineup build to save four requests in a case ESPN's feed never produces. So the
+    budget is what gets *asked for*; what a short page still decides is where reading
+    stops, which is what the answer is made of.
+    """
     pages = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         pages.append(request)
+        offset = json.loads(request.headers["X-Fantasy-Filter"])["players"]["offset"]
         return httpx.Response(200, json={"players": [
-            {"id": len(pages), "player": {"fullName": "X", "defaultPositionId": 3,
-                                          "proTeamId": 25, "stats": []}}
+            {"id": offset, "player": {"fullName": f"P{offset}", "defaultPositionId": 3,
+                                      "proTeamId": 25, "stats": []}}
         ]})
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         rows = week_projections(2026, 9, http=client, pages=5, page_size=50)
-    assert len(pages) == 1 and len(rows) == 1
+    assert len(rows) == 1, "one short page, so only its own row is read"
+    assert len(pages) == 5 and len(pages) <= 5, "and never more than the budget"
+
+
+def test_one_page_asked_for_is_one_request():
+    pages = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        pages.append(request)
+        return httpx.Response(200, json={"players": []})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        week_projections(2026, 9, http=client, pages=1, page_size=50)
+    assert len(pages) == 1
 
 
 # -- the join -------------------------------------------------------------------------

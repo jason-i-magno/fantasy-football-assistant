@@ -22,7 +22,14 @@ from ..espn_fantasy import ESPNFantasyError, ESPNPlayer, fetch_weeks
 from ..fanout import gather, start
 from ..models import Player, to_int
 from ..playoffs import regular_season_end, scored_weeks, undecided_weeks
-from ..projections import LAST_WEEK, Projection, build, playoff_weeks, window_per_game
+from ..projections import (
+    LAST_WEEK,
+    Projection,
+    average_per_game,
+    build,
+    playoff_weeks,
+    weekly_projections,
+)
 from ..sleeper import SleeperClient
 from ..waivers.status import LAST_REGULAR_WEEK, build_report
 from .advice import Horizon, LineupAdvice, build_advice, target_week
@@ -33,9 +40,12 @@ log = logging.getLogger(__name__)
 # How far ahead to look for the week that still has games left. Two is enough: the only time
 # the current week has no games to come is after its last kickoff, and then the next one does.
 WEEKS_AHEAD = 2
-# The build's one fan-out covers four feeds at once, so it is given a little more room
-# than a single feed's pages get. Still small: these are somebody else's servers.
-FETCH_WORKERS = 6
+# The build's one fan-out covers five feeds at once -- the waiver report, Sleeper's weekly
+# and season projections, the fixtures still to come and the scores already in -- so it is
+# given more room than a single feed's pages get. Measured on the real wave of 22 jobs:
+# six at a time took 1.51s and twelve took 0.52s, because one slow job in each of six slots
+# leaves everything else queued behind it.
+FETCH_WORKERS = 12
 
 
 class LineupUnavailable(Exception):
@@ -113,7 +123,11 @@ def load_advice(
             return schedules[for_week]
         return kickoffs_for(for_season, for_week)
 
-    report = build_report(client, league_id, now, kickoffs_in_hand)
+    # The waiver report goes in the wave below rather than before it. Nothing between here
+    # and there needs it -- the target week comes from the scoreboards, and the report is
+    # not read until the advice is built -- and it is a third of a second of fetching that
+    # was holding everything else up.
+    waivers = partial(build_report, client, league_id, now, kickoffs_in_hand)
     week = target_week(schedules, now)
     if week is None:
         raise LineupUnavailable(
@@ -144,6 +158,7 @@ def load_advice(
     # in -- and waiting for each in turn was most of a cold build. Keys are distinct, so
     # no two jobs race for the same cached response.
     jobs: dict[tuple[str, int], Callable[[], object]] = {
+        ("report", 0): waivers,
         ("season", 0): partial(client.projections_season, str(season)),
     }
     jobs.update({("sleeper", w): partial(client.projections_week, str(season), w)
@@ -159,6 +174,7 @@ def load_advice(
 
     # Collected last: by now it has had the scoreboards, the report and the whole wave
     # above to finish in.
+    report = done[("report", 0)]
     espn_weeks, espn_error = espn_ready()
     sleeper_by_week = {w: done[("sleeper", w)] for w in rest}
     sleeper_week = sleeper_by_week.get(week) or client.projections_week(str(season), week)
@@ -177,17 +193,23 @@ def load_advice(
         rest_weeks=rest, playoff_weeks=window,
     )
     espn_rows = espn_weeks.get(week, [])
-    per_game = {
-        name: window_per_game(
+    # One blend per week, shared by both windows. The playoff weeks are the last of the
+    # weeks still to be played, so a window built on its own blended weeks 15 to 17 twice
+    # -- a tenth of a second of doing the same arithmetic again.
+    blended: dict[int, Mapping[str, Projection]] = {}
+    per_game: dict[str, dict] = {}
+    for name, weeks in (("rest", rest), ("playoff", window)):
+        if not weeks:
+            continue
+        weekly_projections(
             players=players,
             scoring=scoring,
             weeks=weeks,
             sleeper_weeks={w: sleeper_by_week.get(w, ()) for w in weeks},
             espn_weeks=espn_weeks,
+            blended=blended,
         )
-        for name, weeks in (("rest", rest), ("playoff", window))
-        if weeks
-    }
+        per_game[name] = average_per_game(blended, weeks)
 
     projections: Mapping[str, Projection] = build(
         players=players,
