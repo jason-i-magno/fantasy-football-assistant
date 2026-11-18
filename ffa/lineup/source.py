@@ -109,8 +109,13 @@ def load_advice(
     # last build's copies live, beside the player map.
     fetch_espn = espn_for or (
         lambda s, w: fetch_weeks(s, w, http=http, cache_dir=client.cache_dir))
-    espn_window = tuple(range(max(1, base - 1), _final_week(settings) + 1)) or (base,)
-    espn_ready = start(partial(_espn_or_reason, fetch_espn, season, espn_window))
+    # Every week a kickoff could put this build in, through the last one the league plays.
+    # Both feeds are asked for this rather than for the target week, because the target
+    # week is not known yet and this is the smallest range certain to contain it; what
+    # comes back is sliced once it is. Over-fetching is one or two small weekly requests;
+    # waiting instead costs a whole round trip to ESPN's scoreboard.
+    forward_weeks = tuple(range(max(1, base - 1), _final_week(settings) + 1)) or (base,)
+    espn_ready = start(partial(_espn_or_reason, fetch_espn, season, forward_weeks))
 
     # Every scoreboard at once -- a quarter of a second each, and they were fetched one
     # week at a time. The waiver report wants three of these same weeks, so it is handed
@@ -118,10 +123,17 @@ def load_advice(
     # them instead only looked faster, because both halves then raced for week 9 and
     # fetched it twice.
     wanted = range(max(1, base - 1), min(LAST_REGULAR_WEEK, base + WEEKS_AHEAD) + 1)
-    schedules = gather({w: partial(kickoffs_for, season, w) for w in wanted})
+    schedules_ready = start(partial(
+        gather, {w: partial(kickoffs_for, season, w) for w in wanted}))
 
     def kickoffs_in_hand(for_season: int, for_week: int) -> Mapping[str, datetime]:
-        """A week already fetched, or a request for one nobody expected to be asked for."""
+        """A week already fetched, or a request for one nobody expected to be asked for.
+
+        The report runs as a job in the wave and reads the scoreboards through here, so
+        this waits for them rather than fetching its own: both halves want the same three
+        weeks, and when they each fetched them the saving was three requests in the bin.
+        """
+        schedules = schedules_ready()
         if for_season == season and for_week in schedules:
             return schedules[for_week]
         return kickoffs_for(for_season, for_week)
@@ -131,13 +143,6 @@ def load_advice(
     # not read until the advice is built -- and it is a third of a second of fetching that
     # was holding everything else up.
     waivers = partial(build_report, client, league_id, now, kickoffs_in_hand)
-    week = target_week(schedules, now)
-    if week is None:
-        raise LineupUnavailable(
-            "No NFL games are left in the weeks around Sleeper's current week, so there is "
-            "no lineup to set. Check back next season."
-        )
-    kickoffs = schedules[week]
 
     raw_players, _ = client.players()
     players = {
@@ -146,12 +151,6 @@ def load_advice(
         if (player := Player.from_sleeper(pid, raw)) is not None
     }
 
-    # Two windows, both built only from weeks still to be played. The fantasy playoffs are
-    # a separate question from the rest of the season -- a player can be worth a point a
-    # week in one and nothing in the other, because the schedule is different -- and
-    # neither of them is Sleeper's season row, which was written in August.
-    window = tuple(w for w in playoff_weeks(settings) if w >= week)
-    rest = tuple(range(week, _final_week(settings) + 1))
     open_weeks = undecided_weeks(settings, final_week=regular_season_end(settings))
     played = scored_weeks(settings, final_week=regular_season_end(settings))
 
@@ -165,15 +164,30 @@ def load_advice(
         ("season", 0): partial(client.projections_season, str(season)),
     }
     jobs.update({("sleeper", w): partial(client.projections_week, str(season), w)
-                 for w in rest})
+                 for w in forward_weeks})
     # The weeks whose results are still to come, for the playoff race; and the weeks
     # already played, which is what each team actually scores.
     jobs.update({("fixture", w): partial(_matchups, client, league_id, w)
                  for w in open_weeks})
     jobs.update({("scored", w): partial(_matchups, client, league_id, w) for w in played})
-    if week not in open_weeks:
-        jobs[("fixture", week)] = partial(_matchups, client, league_id, week)
     done = gather(jobs, workers=FETCH_WORKERS)
+
+    # Only now is the week known, and everything above gets sliced to it. The scoreboards
+    # arrived long ago: the report in the wave was waiting on them.
+    schedules = schedules_ready()
+    week = target_week(schedules, now)
+    if week is None:
+        raise LineupUnavailable(
+            "No NFL games are left in the weeks around Sleeper's current week, so there is "
+            "no lineup to set. Check back next season."
+        )
+    kickoffs = schedules[week]
+    # Two windows, both built only from weeks still to be played. The fantasy playoffs are
+    # a separate question from the rest of the season -- a player can be worth a point a
+    # week in one and nothing in the other, because the schedule is different -- and
+    # neither of them is Sleeper's season row, which was written in August.
+    window = tuple(w for w in playoff_weeks(settings) if w >= week)
+    rest = tuple(range(week, _final_week(settings) + 1))
 
     # Collected last: by now it has had the scoreboards, the report and the whole wave
     # above to finish in.
@@ -184,7 +198,7 @@ def load_advice(
     sleeper_season = done[("season", 0)]
     schedule = {w: done[("fixture", w)] for w in open_weeks}
     history = {w: _week_points(done[("scored", w)]) for w in played}
-    matchups = done.get(("fixture", week)) or []
+    matchups = done.get(("fixture", week)) or _matchups(client, league_id, week)
     if espn_error is not None:
         # A second opinion is an improvement, not a dependency. Losing it costs the spread
         # check and the role-change gap, so say so rather than silently halving the inputs.

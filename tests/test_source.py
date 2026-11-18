@@ -217,10 +217,14 @@ def test_every_week_is_fetched_once_and_only_the_weeks_that_are_needed():
     assert sorted(matchups) == list(range(1, 15)), "weeks 1-8 scored, 9-14 still to play"
     assert len(matchups) == len(set(matchups)), "and each of them exactly once"
     projections = client.weeks_called("projections_week")
-    # Two playoff teams is one round, so this league's last week is 15, not 17: the
-    # window stops where the league does rather than where the NFL does.
-    assert sorted(projections) == list(range(9, 16)), "this week through the league's last"
+    # Two playoff teams is one round, so this league's last week is 15, not 17: the window
+    # stops where the league does rather than where the NFL does. It starts one week
+    # before Sleeper's, not at the target week, because the projections are asked for
+    # before the kickoffs have said which week that is -- the smallest range certain to
+    # contain it. One small request over, against a whole round trip waiting.
+    assert sorted(projections) == list(range(8, 16))
     assert len(projections) == len(set(projections))
+    assert min(projections) >= client.state_week - 1, "the over-fetch stays bounded"
 
 
 def test_the_espn_window_covers_the_week_the_build_settles_on():
