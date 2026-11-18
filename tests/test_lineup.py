@@ -6,6 +6,7 @@ on the one week a player happens to be idle, or a waiver claim on someone who wo
 crack the lineup.
 """
 
+import random
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -115,6 +116,25 @@ def test_the_target_week_rolls_over_once_the_last_game_has_started():
 
 def test_no_games_left_at_all_has_no_target_week():
     assert target_week({9: {"SF": NOW - timedelta(days=9)}}, NOW) is None
+
+
+def test_the_target_week_is_always_one_of_the_weeks_it_was_given():
+    """Load-bearing since the ESPN fetch stopped waiting for the target week.
+
+    That fetch now starts before the week is known and covers the earliest week offered
+    through the league's last, and what it read is sliced by the target week afterwards.
+    The slice holds only while the target week is one of the weeks offered -- if this ever
+    answered with a week nobody asked about, the projections for the chosen week would
+    quietly come back empty rather than wrong, which is the worst way to find out.
+    """
+    rng = random.Random(4)
+    for _ in range(200):
+        weeks = sorted(rng.sample(range(1, 19), rng.randint(1, 6)))
+        schedules = {
+            week: {"SF": NOW + timedelta(days=rng.randint(-20, 20))} for week in weeks
+        }
+        picked = target_week(schedules, NOW)
+        assert picked is None or picked in schedules
 
 
 # -- the roster ------------------------------------------------------------------------

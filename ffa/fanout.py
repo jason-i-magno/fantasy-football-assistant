@@ -36,6 +36,25 @@ K = TypeVar("K")
 V = TypeVar("V")
 
 
+def start(job: Callable[[], V]) -> Callable[[], V]:
+    """Begin a job now and hand back the wait for it.
+
+    For the one fetch in a build that needs nothing and that everything else is waiting
+    behind. `gather` is for work that begins and ends together; this is for work that
+    should already be running while the caller does something else.
+
+    The pool is shut down as soon as the job is submitted, which stops it taking new work
+    without touching the job already running -- so the thread lives exactly as long as the
+    fetch does.
+    """
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ffa-ahead")
+    try:
+        future = pool.submit(job)
+    finally:
+        pool.shutdown(wait=False)
+    return future.result
+
+
 def gather(jobs: Mapping[K, Callable[[], V]], *, workers: int = MAX_WORKERS) -> dict[K, V]:
     """Run each job at once and return `{key: result}`.
 
