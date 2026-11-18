@@ -600,3 +600,18 @@ def test_last_week_s_pages_do_not_pile_up(tmp_path):
         fetch_weeks(2026, [10], http=client, pages=1, cache_dir=tmp_path)
     kept = [p.name for p in (tmp_path / "espn").glob("*.page")]
     assert len(kept) == 1 and kept[0].startswith("2026-10-")
+
+
+def test_a_bumped_cache_version_takes_the_old_files_with_it(tmp_path):
+    """A version bump means the old files can never be read again, and nothing else is
+    ever going to delete them."""
+    from ffa import espn_fantasy as ef
+
+    stale = tmp_path / "espn" / f"2026-9-0.v{ef.CACHE_VERSION - 1}.page"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b'W/"old"\n{"rows": 1, "players": []}')
+    handler, _ = _feed([_espn_row(1, 9, 12.5)])
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        fetch_weeks(2026, [9], http=client, pages=1, cache_dir=tmp_path)
+    kept = [p.name for p in (tmp_path / "espn").glob("*.page")]
+    assert kept == [f"2026-9-0.v{ef.CACHE_VERSION}.page"]
