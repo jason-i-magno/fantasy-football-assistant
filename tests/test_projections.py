@@ -513,3 +513,90 @@ def test_several_weeks_are_read_out_of_one_espn_response():
     assert {w: rows[0].stats["rush_yd"] for w, rows in weeks.items()} == {
         9: 90.0, 15: 150.0, 16: 160.0, 17: 170.0
     }
+
+
+# -- keeping the feed without going stale ----------------------------------------------
+
+
+def _espn_row(espn_id: int, week: int, points: float) -> dict:
+    return {"id": espn_id, "player": {
+        "fullName": f"Player {espn_id}", "defaultPositionId": 2, "proTeamId": 25,
+        "stats": [{"statSourceId": 1, "statSplitTypeId": 1, "scoringPeriodId": week,
+                   "seasonId": 2026, "appliedTotal": points, "stats": {"24": points}}],
+    }}
+
+
+def _feed(rows, etag="W/\"one\"", status=200):
+    """A mock ESPN that answers a conditional request the way ESPN does."""
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if etag and request.headers.get("If-None-Match") == etag:
+            return httpx.Response(304)
+        headers = {"ETag": etag} if etag else {}
+        return httpx.Response(status, json={"players": rows}, headers=headers)
+
+    return handler, seen
+
+
+def test_a_kept_page_is_revalidated_rather_than_downloaded_again(tmp_path):
+    """The feed is the slowest thing in a build and eleven megabytes of it is re-read
+    every time. ESPN answers a request carrying the `ETag` with 304 and no body, so what
+    was kept is reused -- and because the server decides, this is not a staleness trade."""
+    handler, seen = _feed([_espn_row(1, 9, 12.5)])
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        first = fetch_weeks(2026, [9], http=client, pages=1, cache_dir=tmp_path)
+        second = fetch_weeks(2026, [9], http=client, pages=1, cache_dir=tmp_path)
+    assert "If-None-Match" not in seen[0].headers, "nothing kept yet to revalidate"
+    assert seen[1].headers["If-None-Match"] == 'W/"one"'
+    assert [p.applied_total for p in second[9]] == [12.5]
+    assert [(p.espn_id, p.name, p.team, p.position, p.stats) for p in first[9]] == \
+           [(p.espn_id, p.name, p.team, p.position, p.stats) for p in second[9]]
+
+
+def test_a_page_that_changed_comes_back_changed(tmp_path):
+    """The point of revalidating rather than holding a copy for a while: when the feed
+    moves, the next build gets the new number, not the kept one."""
+    handler, _ = _feed([_espn_row(1, 9, 12.5)])
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        fetch_weeks(2026, [9], http=client, pages=1, cache_dir=tmp_path)
+    moved, _ = _feed([_espn_row(1, 9, 20.0)], etag='W/"two"')
+    with httpx.Client(transport=httpx.MockTransport(moved)) as client:
+        after = fetch_weeks(2026, [9], http=client, pages=1, cache_dir=tmp_path)
+    assert [p.applied_total for p in after[9]] == [20.0]
+
+
+def test_a_page_with_no_etag_is_not_kept(tmp_path):
+    """Nothing to revalidate against later, so keeping it would mean guessing when it
+    went stale -- which is the trade this whole approach exists to avoid."""
+    handler, seen = _feed([_espn_row(1, 9, 12.5)], etag=None)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        fetch_weeks(2026, [9], http=client, pages=1, cache_dir=tmp_path)
+        fetch_weeks(2026, [9], http=client, pages=1, cache_dir=tmp_path)
+    assert not list((tmp_path / "espn").glob("*.page"))
+    assert all("If-None-Match" not in request.headers for request in seen)
+
+
+def test_a_damaged_kept_page_is_simply_refetched(tmp_path):
+    """A cache is an optimisation and must never be a way for a build to fail: half a
+    file, someone else's file, no file at all, all mean the same thing."""
+    handler, seen = _feed([_espn_row(1, 9, 12.5)])
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        fetch_weeks(2026, [9], http=client, pages=1, cache_dir=tmp_path)
+        kept, = (tmp_path / "espn").glob("*.page")
+        kept.write_bytes(b'W/"one"\n{"rows": 1, "players": [{"id"')  # truncated mid-write
+        again = fetch_weeks(2026, [9], http=client, pages=1, cache_dir=tmp_path)
+    assert [p.applied_total for p in again[9]] == [12.5]
+    assert "If-None-Match" not in seen[-1].headers, "a damaged file is not an ETag"
+
+
+def test_last_week_s_pages_do_not_pile_up(tmp_path):
+    """Four megabytes a page, and only the current week's are ever revalidated again."""
+    handler, _ = _feed([_espn_row(1, 9, 12.5)])
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        fetch_weeks(2026, [9], http=client, pages=1, cache_dir=tmp_path)
+        assert len(list((tmp_path / "espn").glob("*.page"))) == 1
+        fetch_weeks(2026, [10], http=client, pages=1, cache_dir=tmp_path)
+    kept = [p.name for p in (tmp_path / "espn").glob("*.page")]
+    assert len(kept) == 1 and kept[0].startswith("2026-10-")

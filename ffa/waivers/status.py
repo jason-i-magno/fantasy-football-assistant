@@ -245,11 +245,22 @@ def build_report(
     schedules = [fetched[w] for w in weeks]
     kickoffs = last_kickoffs(schedules, now)
     closed = week_closed_at(schedules, now)
+    # Six reads with nothing between them: three weeks of transactions, the rosters, the
+    # league's users and the player map. Fetched one after another they are most of this
+    # report, and the report is the longest job in the lineup build's wave, so the whole
+    # build waits on them.
+    reads: dict[object, Callable[[], object]] = {
+        ("transactions", w): partial(client.transactions, league_id, w) for w in weeks
+    }
+    reads["rosters"] = partial(client.rosters, league_id)
+    reads["users"] = partial(client.league_users, league_id)
+    reads["players"] = client.players
+    done = gather(reads, workers=len(reads))
     drops = recent_drops(
-        (t for w in weeks for t in client.transactions(league_id, w)), since=now - rules.drop_hold
+        (t for w in weeks for t in done[("transactions", w)]), since=now - rules.drop_hold
     )
-    owners = roster_owners(client.rosters(league_id), client.league_users(league_id))
-    players_raw, _ = client.players()
+    owners = roster_owners(done["rosters"], done["users"])
+    players_raw, _ = done["players"]
 
     statuses = []
     for player_id, raw in players_raw.items():
