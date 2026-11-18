@@ -119,7 +119,12 @@ to get wrong, in the order they bite:
   played. Nothing in that list needs anything from anything else in it, so it all goes
   through `fanout.gather` at once -- and *fewer* requests than before (38 against 41),
   because the scoreboards the waiver report wants are handed to it rather than fetched
-  again. 5.07s to 2.44s, medians of four cold builds. Two things to keep in mind when adding a fetch here. The soft
+  again. 5.07s to 1.79s, medians of cold builds against a real league. Three things that
+  each looked small and were not: the waiver report belongs *in* the wave, since nothing
+  before the advice reads it; the pool needs room for the whole wave, because one slow job
+  in each of six slots leaves the other sixteen queued (six at a time measured 1.51s
+  against twelve at 0.52s); and each week is blended once, shared between the two windows,
+  rather than once per window. Two things to keep in mind when adding a fetch here. The soft
   failure for ESPN lives inside its job (`_espn_or_reason`), because a fan-out raises the
   first exception any job raised and losing a second opinion must not lose the build. And
   the jobs are keyed `(feed, week)` so that no two of them can ask for the same cached
@@ -390,7 +395,10 @@ team's odds at every win total still open to it -- then a picker for one team's 
   says "working it out…" for exactly that long, so measure before adding anything to the
   wave. `load_advice` itself has no offline test -- the web tests inject a whole loader --
   so a change to its shape is checked by diffing `ffa lineup --json` against `main`, which
-  should differ only in `now`. The
+  should differ only in `now`. Interleave the runs (main, branch, main) when you do: a
+  roster move or a projection update between two runs minutes apart shows up as dozens of
+  differences that have nothing to do with the change, and the second `main` is what tells
+  you which you are looking at. The
   weeks already played, for the scoring model, are eight more cached requests and 0.17s of
   that -- measure this sort of thing rather than diffing two timed builds, because the run
   to run spread on a cold build is five times the number being looked for.
@@ -425,10 +433,13 @@ team's odds at every win total still open to it -- then a picker for one team's 
 - Tunable shortlist weights are named constants at the top of `draft/scarcity.py`.
 - Recordings are JSON Lines (header, then snapshots) tagged `"draftbot-recording/1"`. Keep
   that tag: existing recordings depend on it.
-- The ESPN player feed is paged. The first page is fetched alone and the rest together,
-  because a pool smaller than one page is the one case where asking for all five would be
-  four requests for nothing -- and a row is parsed once for every week asked for, not once
-  per week, which was most of a second spent re-reading the same stat list.
+- The ESPN player feed is paged, and all the pages are fetched at once. They used to go
+  one-then-four, so that a pool smaller than one page could not waste four requests -- a
+  case ESPN's feed never produces, since it is a thousand players deep all season, and one
+  that cost 0.66s of *every* build, because the first page is as slow as the other four
+  together. The page budget is what gets asked for; a short page still ends the reading,
+  which is what decides the answer. A row is parsed once for every week asked for, not
+  once per week.
 - **ESPN's projection feed has three traps**, all in the `ffa/espn_fantasy.py` docstring:
   any `filterStatsFor*` key in `X-Fantasy-Filter` silently strips the projections and
   returns only actuals; the payload carries two seasons, so `seasonId` must be pinned or you

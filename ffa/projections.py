@@ -321,20 +321,56 @@ def window_per_game(
     of a backup one feed has written up and the other has not -- worth saying out loud now
     that these figures decide drops and rank the watchlist.
     """
+    blended = weekly_projections(players=players, scoring=scoring, weeks=weeks,
+                                 sleeper_weeks=sleeper_weeks, espn_weeks=espn_weeks)
+    return average_per_game(blended, weeks)
+
+
+def weekly_projections(
+    *,
+    players: Mapping[str, Player],
+    scoring: Mapping[str, Any],
+    weeks: Sequence[int],
+    sleeper_weeks: Mapping[int, Iterable[Mapping[str, Any]]] | None = None,
+    espn_weeks: Mapping[int, Iterable[ESPNPlayer]] | None = None,
+    blended: dict[int, Mapping[str, Projection]] | None = None,
+) -> dict[int, Mapping[str, Projection]]:
+    """Every player's projection for each of these weeks, one blend per week.
+
+    Separate from the averaging because the two windows overlap: the playoff weeks are the
+    last three of the weeks still to be played, so blending each window on its own did
+    weeks 15 to 17 twice. Pass the same `blended` dict to both and each week is built once.
+    """
     sleeper_weeks = sleeper_weeks or {}
     espn_weeks = espn_weeks or {}
+    out = blended if blended is not None else {}
+    for week in weeks:
+        if week not in out:
+            out[week] = build(
+                players=players,
+                scoring=scoring,
+                sleeper_week=sleeper_weeks.get(week, ()),
+                espn_week=espn_weeks.get(week, ()),
+            )
+    return out
+
+
+def average_per_game(
+    blended: Mapping[int, Mapping[str, Projection]], weeks: Sequence[int]
+) -> dict[str, WindowValue]:
+    """The mean over `weeks` of blends already built, with corrupt rows left out.
+
+    The averaging is separate from the blending because the windows overlap and a week
+    should only be built once; the judging of rows has to be here rather than there,
+    because a corrupt row is only recognisable against the *other weeks in this window*
+    and the two windows do not contain the same weeks.
+    """
     # Kept per week rather than summed as it goes: a corrupt row can only be recognised
     # against the player's other weeks, which means holding them all before averaging any.
     weekly_points: dict[str, list[tuple[int, float]]] = {}
     weekly_sources: dict[str, dict[int, tuple[str, ...]]] = {}
     for week in weeks:
-        weekly = build(
-            players=players,
-            scoring=scoring,
-            sleeper_week=sleeper_weeks.get(week, ()),
-            espn_week=espn_weeks.get(week, ()),
-        )
-        for player_id, projection in weekly.items():
+        for player_id, projection in (blended.get(week) or {}).items():
             if projection.sources:  # a week nobody projected him for is not a zero
                 weekly_points.setdefault(player_id, []).append((week, projection.points))
                 weekly_sources.setdefault(player_id, {})[week] = projection.sources
