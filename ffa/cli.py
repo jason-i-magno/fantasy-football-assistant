@@ -569,7 +569,13 @@ def _setup_logging(verbose: bool) -> None:
     file_handler = logging.FileHandler(DEFAULT_CACHE_DIR / "ffa.log")
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     file_handler.setLevel(logging.DEBUG)
-    console_handler = RichHandler(show_path=False, show_time=False, level=logging.INFO if verbose else logging.WARNING)
+    # Warnings go to stderr, because stdout is the output: `ffa lineup --json | jq` breaks
+    # on a line of log text in front of the document, and the warning that found this one
+    # fires whenever a feed serves a corrupt weekly row, which is not rare enough to live
+    # with. Rich's default console is stdout, so it has to be said explicitly.
+    console_handler = RichHandler(console=Console(stderr=True), show_path=False,
+                                  show_time=False,
+                                  level=logging.INFO if verbose else logging.WARNING)
     logging.basicConfig(level=logging.DEBUG, handlers=[file_handler, console_handler], force=True)
 
 

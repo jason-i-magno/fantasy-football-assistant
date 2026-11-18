@@ -413,6 +413,9 @@ team's odds at every win total still open to it -- then a picker for one team's 
 - `show()` toggles the `hidden` *attribute*, and an author `display` rule outranks the user
   agent's `[hidden] { display: none }` — a flex or grid element would stay visible. There is
   now an explicit `[hidden]` rule in `styles.css`; don't remove it.
+- Warnings go to stderr. Rich's default console is stdout, which is where `--json` puts
+  its document, so a single warning in front of it breaks `ffa lineup --json | jq`. The
+  handler is built with an explicit stderr console in `cli._setup_logging`; keep it.
 - Read-only by construction: the app rejects anything but GET/HEAD. `--token`/`FFA_WEB_TOKEN`
   gates every route including the static files, and static serving is confined to
   `ffa/web/static` by a `is_relative_to` check — keep both when adding routes.

@@ -601,3 +601,28 @@ class _FakeLeagues:
 
     def close(self):
         pass
+
+
+def test_a_warning_never_lands_in_the_json_output():
+    """`ffa lineup --json` is a document on stdout, and Rich logs to stdout by default.
+
+    Found by a verification script that could not parse its own output: a projections
+    warning had printed itself in front of the JSON. Any warning does it -- ESPN being
+    down would have too -- so the fix is where the handler is built, not where the
+    warning is raised.
+    """
+    import logging as logging_module
+
+    from rich.logging import RichHandler
+
+    from ffa import cli
+
+    before = logging_module.getLogger().handlers[:]
+    try:
+        cli._setup_logging(verbose=False)
+        rich_handlers = [h for h in logging_module.getLogger().handlers
+                         if isinstance(h, RichHandler)]
+        assert rich_handlers, "the console handler is how warnings reach a terminal"
+        assert all(h.console.stderr for h in rich_handlers)
+    finally:
+        logging_module.getLogger().handlers[:] = before
