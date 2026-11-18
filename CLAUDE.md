@@ -394,12 +394,9 @@ team's odds at every win total still open to it -- then a picker for one team's 
   a worker thread and a progress protocol. It was 5.1s until the
   fetches were made to overlap and ESPN's was started first (see Lineup above); the phone
   says "working it out…" for exactly that long, so measure before adding anything to the
-  wave. `load_advice` itself has no offline test -- the web tests inject a whole loader --
-  so a change to its shape is checked by diffing `ffa lineup --json` against `main`, which
-  should differ only in `now`. Interleave the runs (main, branch, main) when you do: a
-  roster move or a projection update between two runs minutes apart shows up as dozens of
-  differences that have nothing to do with the change, and the second `main` is what tells
-  you which you are looking at. The
+  wave. `load_advice` is driven offline by `tests/test_source.py`; for what a fake client
+  cannot model, the check is still to diff `ffa lineup --json` against `main` (see Tests).
+  The
   weeks already played, for the scoring model, are eight more cached requests and 0.17s of
   that -- measure this sort of thing rather than diffing two timed builds, because the run
   to run spread on a cold build is five times the number being looked for.
@@ -493,6 +490,18 @@ mixups). Fixtures in `tests/fixtures/`:
 is nothing here" dresses noise up as a forecast, which on this card would be worse than the
 coin flip it replaced. It checks the estimator on synthetic seasons whose true spread is
 known, including one with no spread at all.
+
+`tests/test_source.py` drives `load_advice` end to end over a fake Sleeper client, and is
+the only test that exercises the assembly itself: which week the build settles on, which
+weeks it fetches and how often, that the ESPN window covers whatever week the kickoffs
+pick, and that ESPN being down costs the second opinion and nothing else. The fake records
+every call, because *which* weeks are fetched is half of what that function decides and
+fetching one twice is invisible in the output. For anything a fake cannot model -- a real
+feed's shape, a league's own settings -- the check is still to diff `ffa lineup --json`
+against `main`, which should differ only in `now`. Interleave the runs (main, branch,
+main) when you do: a roster move or a projection update between two runs minutes apart
+shows up as dozens of differences that have nothing to do with the change, and the second
+`main` is what tells you which you are looking at.
 
 The lineup tests are hand-made rather than recorded: `tests/test_lineup.py` builds a roster
 from tuples, so no real league data is involved and each test pins one way a feed or a
