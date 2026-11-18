@@ -122,15 +122,22 @@ to get wrong, in the order they bite:
   again. 5.07s to 1.30s, medians of cold builds against a real league. Past that point the
   measured breakdown is: ESPN's revalidated feed 0.23s of the critical path, the Sleeper
   wave about 0.5s, and 0.5s of CPU after it -- there is no single pole left to pull.
-- **The Sleeper wave is connection setup, and there is nothing to tune.** A weekly
-  projection takes 0.06s on a warm connection and 0.6s inside a build, which looks like
-  throttling and is not: eight requests on a cold client take 0.74s each, 0.52s after one
-  connection is warm, and 0.26s once the pool has eight. It is TLS, it is already paid in
-  parallel, and it costs about one handshake per build. Removing ESPN's work entirely
-  changes it by nothing, and the build is flat from four workers to sixteen (1.66s to
-  1.71s, all inside the noise), so `FETCH_WORKERS` is not a dial worth turning again.
-  What would help is reusing connections *between* builds, which the ten-minute feed cache
-  makes pointless: httpx expires a keepalive connection after five seconds.
+- **The build is CPU-bound, not network-bound: 1.55s wall against 1.58s of CPU.** That is
+  the single most useful number here and it was measured late, after a lot of work that
+  assumed the opposite. The structural fixes above were still right -- they removed waits
+  that were real -- but what is left is not waiting.
+- **The Sleeper wave is JSON, and the GIL serialises it.** A weekly projection looks like
+  it takes 0.6s inside a build and 0.06s outside one, which looks like throttling or
+  connection setup and is neither. The request the client makes carries `order_by=ppr` and
+  a position filter and comes back **2.28MB, 3301 rows**; eight of those is 18MB of body
+  to decompress and parse, about 0.43s of CPU, and every thread doing it holds the GIL.
+  Hence: eight payloads one at a time take 0.59s wall and 0.31s CPU, eight at once take
+  0.44s and 0.43s -- concurrency buys 0.15s and no more. That is also why the build is flat
+  from four workers to sixteen, so `FETCH_WORKERS` is not a dial worth turning.
+  **Measure the request the client actually sends.** An earlier note here blamed TLS
+  handshakes, from a probe that fetched the same endpoint without those query parameters
+  and got 0.08MB back -- a payload thirty times smaller, measuring latency where the build
+  spends CPU.
 - **Blending inside the fetch jobs is slower, not faster.** The arithmetic needs only that
   week's two feeds, so folding it into the job that fetched the week looks free -- it
   measured 0.05s *worse* in three pairs out of three. The blend has to wait for the ESPN
