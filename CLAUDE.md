@@ -179,6 +179,19 @@ to get wrong, in the order they bite:
   every remaining week,
   so both windows come out of one response; only Sleeper costs a request per week, and the
   rest window is fetched once and sliced for the playoff one.
+- **One bad weekly row wrecks a window, not a week.** A feed serves the occasional
+  nonsense figure -- live, a kicker's week-15 row came back at 60.5 points against 5.5 to
+  5.9 in all six other weeks still to be played. In the week itself that is one visible
+  number beside both feeds' own; averaged into a seven-week window it put his
+  rest-of-season rate at 13.5 a game and his playoff rate at 24.0, and ranked a kicker
+  averaging under 4 the best add on the board. Kickers are `SLEEPER_ONLY_POSITIONS`, so at
+  the one position where it happened there was no second feed to disagree. `_spike_weeks`
+  leaves such a week out of `window_per_game`, testing against the *highest* of the
+  player's other weeks rather than the middle one, because a real role change is a step
+  (every week after it is high, so nothing fires) while a bad row is alone. A median would
+  throw away the first week of a demotion as corrupt. `WindowValue.excluded` carries what
+  was dropped and it is logged; the target week is left alone deliberately, having no other
+  week to be judged against.
 - **`role_change` is measured over the window, not over one week.** A hard matchup is not a
   demotion, and a player on a bye projects zero -- which made the one check that can see a
   changed role blind in precisely the week the stale row was the only number on the card.

@@ -350,6 +350,117 @@ def test_the_playoff_number_blends_both_sources_like_any_other_week():
     assert per_game["1"].sources == ("espn", "sleeper")  # both, so nothing to warn about
 
 
+def kicker_weeks(by_week):
+    """One Sleeper row per week for a kicker, worth 3 points a field goal under PPR."""
+    return {week: [sleeper_row("1", {"fgm_30_39": goals})] for week, goals in by_week.items()}
+
+
+REST = [11, 12, 13, 14, 15, 16, 17]
+
+
+def test_one_corrupt_weekly_row_is_left_out_of_the_window():
+    """The regression this guard exists for.
+
+    Live, a kicker's week-15 row came back at 60 points against 6 in all six other weeks,
+    which put his rest-of-season rate at 13.7 a game and ranked him the best add on the
+    board. Kickers are Sleeper-only, so there was no second feed to disagree with it.
+    """
+    players = {"1": player("1", "K", "Kick One")}
+    per_game = proj.window_per_game(
+        players=players, scoring=PPR, weeks=REST,
+        sleeper_weeks=kicker_weeks({11: 2.0, 12: 2.0, 13: 2.0, 14: 2.0,
+                                    15: 20.0, 16: 2.0, 17: 2.0}),
+    )
+    assert per_game["1"].points == pytest.approx(6.0)  # not 96 / 7
+    assert per_game["1"].excluded == (15,)
+    assert per_game["1"].sources == ("sleeper",)
+
+
+def test_a_window_with_no_bad_row_keeps_every_week_and_says_so():
+    players = {"1": player("1", "K", "Kick One")}
+    per_game = proj.window_per_game(
+        players=players, scoring=PPR, weeks=REST,
+        sleeper_weeks=kicker_weeks(dict.fromkeys(REST, 2.0) | {15: 4.0}),
+    )
+    assert per_game["1"].points == pytest.approx((6.0 * 6 + 12.0) / 7)
+    assert per_game["1"].excluded == ()
+
+
+def test_taking_over_a_job_is_a_step_and_is_not_dropped():
+    """A role change is several high weeks, so the highest of the others is high too."""
+    players = {"1": player("1", "RB", "A Back")}
+    weeks = {11: 4.0, 12: 4.0, 13: 25.0, 14: 25.0, 15: 25.0, 16: 25.0, 17: 25.0}
+    per_game = proj.window_per_game(
+        players=players, scoring=PPR, weeks=REST,
+        sleeper_weeks={w: [sleeper_row("1", {"rec": v})] for w, v in weeks.items()},
+    )
+    assert per_game["1"].excluded == ()
+    assert per_game["1"].points == pytest.approx(sum(weeks.values()) / 7)
+
+
+def test_losing_a_job_is_a_step_too_even_though_the_high_weeks_come_first():
+    """Why the ceiling is the *highest* other week and not the middle one.
+
+    Against a median, week 11 here is 30 against a middle of 4 and would be thrown away as
+    corrupt -- deleting the weeks a manager most needs to see from a player he is about to
+    drop. Against the highest other week it is one of a pair and nothing fires.
+    """
+    players = {"1": player("1", "RB", "A Back")}
+    weeks = {11: 30.0, 12: 30.0, 13: 4.0, 14: 4.0, 15: 4.0, 16: 4.0, 17: 4.0}
+    per_game = proj.window_per_game(
+        players=players, scoring=PPR, weeks=REST,
+        sleeper_weeks={w: [sleeper_row("1", {"rec": v})] for w, v in weeks.items()},
+    )
+    assert per_game["1"].excluded == ()
+    assert per_game["1"].points == pytest.approx(80.0 / 7)
+
+
+def test_a_window_too_short_to_judge_a_row_against_drops_nothing():
+    players = {"1": player("1", "K", "Kick One")}
+    per_game = proj.window_per_game(
+        players=players, scoring=PPR, weeks=[16, 17],
+        sleeper_weeks=kicker_weeks({16: 20.0, 17: 2.0}),
+    )
+    assert per_game["1"].excluded == ()
+    assert per_game["1"].points == pytest.approx(33.0)
+
+
+def test_small_numbers_are_never_called_corrupt():
+    """A ratio on its own would fire on figures that decide nothing either way."""
+    players = {"1": player("1", "WR", "Wide One")}
+    weeks = {15: 0.2, 16: 0.1, 17: 3.0}  # 15x the next week, and still worth nothing
+    per_game = proj.window_per_game(
+        players=players, scoring=PPR, weeks=[15, 16, 17],
+        sleeper_weeks={w: [sleeper_row("1", {"rec": v})] for w, v in weeks.items()},
+    )
+    assert per_game["1"].excluded == ()
+    assert per_game["1"].points == pytest.approx(1.1)
+
+
+def test_a_dropped_week_takes_its_feed_out_of_the_sources_with_it():
+    """The window must not claim a feed that only ever backed the week it threw away."""
+    players = {"1": player("1", "WR", "Wide One", espn_id="5")}
+    per_game = proj.window_per_game(
+        players=players, scoring=PPR, weeks=REST,
+        sleeper_weeks={w: [sleeper_row("1", {"rec": 6.0})] for w in REST},
+        espn_weeks={15: [espn_row("5", "Wide One", "WR", "SF", {"rec": 200.0})]},
+    )
+    assert per_game["1"].excluded == (15,)
+    assert per_game["1"].sources == ("sleeper",)  # not ("espn", "sleeper")
+    assert per_game["1"].points == pytest.approx(6.0)
+
+
+def test_two_corrupt_rows_in_one_window_hide_each_other():
+    """A documented limitation: each bad row is the other's ceiling.
+
+    Pinned because the failure is silent and in the safe direction -- nothing is dropped
+    that cannot be shown wrong -- so a future change that starts dropping both should be a
+    deliberate one.
+    """
+    assert proj._spike_weeks([(15, 60.0), (16, 60.0), (17, 6.0)]) == frozenset()
+    assert proj._spike_weeks([(15, 60.0), (16, 6.0), (17, 6.0)]) == frozenset({15})
+
+
 def test_the_playoff_figure_rides_along_on_the_projection():
     players = {"1": player("1", "WR", "Wide One")}
     built = proj.build(players=players, scoring=PPR,
