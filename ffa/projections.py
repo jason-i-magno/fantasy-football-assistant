@@ -28,6 +28,14 @@ Why two sources, when blending costs a second fetch and a fuzzy join:
   players the same way, so the mean of the pair is a better point estimate than either and
   the orderings it produces are what the lineup solver consumes.
 
+A feed also serves the occasional row that is simply wrong -- a kicker at 60.5 points in
+one week and under 6 in every other. A single bad row is a rounding error in a week and a
+wrecking ball in a *window*, where it is averaged into the rest-of-season and playoff rates
+that rank the watchlist and decide drops, so `window_per_game` leaves such a week out and
+`_spike_weeks` is the test for which ones qualify. It is deliberately not applied to the
+week in front of you: there is no other week to judge that one against, and it is a single
+figure on screen next to both feeds' own numbers rather than one of seven terms in a mean.
+
 Byes come from the kickoff schedule, never from the feeds: both still publish a row for a
 team on bye, Sleeper's with no stats and ESPN's with `appliedTotal` 0, so "no projection"
 finds nothing. A team absent from the week's kickoffs is on bye, full stop.
@@ -51,6 +59,16 @@ log = logging.getLogger(__name__)
 SPREAD_FLAG = 5.0
 # A weekly number this far above the stale season pace is a role change, not noise.
 ROLE_CHANGE_FLAG = 4.0
+# A weekly row this many times above every *other* week a window has for the same player is
+# a corrupt row rather than a big week, and is left out of the window's mean. Five is well
+# clear of what a matchup moves (projections are regressed; a soft week is worth tens of
+# percent, not multiples) and well under the order of magnitude a bad row sits at.
+SPIKE_MULTIPLE = 5.0
+# Only rows big enough to distort a window are worth doubting at all. Without a floor a
+# player projected 0.2, 0.1 and 3.0 has a "spike" that decides nothing either way.
+SPIKE_FLOOR = 20.0
+# Fewer projected weeks than this and there is nothing to judge a row against.
+MIN_SPIKE_WEEKS = 3
 # Games in a season projection, used when a row's own `gp` is unusable. Every skill-position
 # season row reports 18.0; team defenses report 1.0 for all 32 of them, which would read a
 # whole season's points as a single game's and value a defense at about 98 points a week.
@@ -248,6 +266,41 @@ class WindowValue:
 
     points: float
     sources: tuple[str, ...]  # every feed that contributed to any week in the window
+    excluded: tuple[int, ...] = ()  # weeks left out as corrupt rows, see `_spike_weeks`
+
+
+def _spike_weeks(weekly: Sequence[tuple[int, float]]) -> frozenset[int]:
+    """The weeks in one player's window whose number is a bad row, not a big week.
+
+    Found live: a kicker's week-15 row came back at 60.5 points where the same feed had him
+    at 5.5 to 5.9 in all six other weeks still to be played. One row in seven put his
+    rest-of-season rate at 13.5 a game and his playoff rate at 24.0 -- enough to rank a
+    kicker averaging under 4 as the best player on the watchlist. The feeds cannot be
+    cross-checked out of this: kickers are `SLEEPER_ONLY_POSITIONS`, so for the one position
+    where it happened there is no second opinion to disagree with it.
+
+    What there is instead is the player's own other weeks. The test is deliberately a
+    *spike*, measured against the highest of them rather than the middle:
+
+    - A real change in role is a step. The weeks after a back takes over a job are all
+      high, so the highest of the others is high too and nothing here fires. Measured
+      against a median it would, and the first week of a demotion -- high, with every later
+      week low -- would be thrown away as corrupt. That is a projection doing its job.
+    - A bad row is alone. Every other week agrees with every other week, and it does not.
+
+    Two corrupt rows in one window hide each other, since each is the other's ceiling. That
+    is the conservative direction: nothing is dropped that cannot be shown to be wrong.
+    """
+    if len(weekly) < MIN_SPIKE_WEEKS:
+        return frozenset()  # no ceiling worth measuring against
+    spikes = set()
+    for week, points in weekly:
+        if points < SPIKE_FLOOR:
+            continue
+        others = [p for other, p in weekly if other != week]
+        if others and points > SPIKE_MULTIPLE * max(others):
+            spikes.add(week)
+    return frozenset(spikes)
 
 
 def window_per_game(
@@ -270,8 +323,10 @@ def window_per_game(
     """
     sleeper_weeks = sleeper_weeks or {}
     espn_weeks = espn_weeks or {}
-    totals: dict[str, list[float]] = {}
-    seen: dict[str, set[str]] = {}
+    # Kept per week rather than summed as it goes: a corrupt row can only be recognised
+    # against the player's other weeks, which means holding them all before averaging any.
+    weekly_points: dict[str, list[tuple[int, float]]] = {}
+    weekly_sources: dict[str, dict[int, tuple[str, ...]]] = {}
     for week in weeks:
         weekly = build(
             players=players,
@@ -281,13 +336,29 @@ def window_per_game(
         )
         for player_id, projection in weekly.items():
             if projection.sources:  # a week nobody projected him for is not a zero
-                totals.setdefault(player_id, []).append(projection.points)
-                seen.setdefault(player_id, set()).update(projection.sources)
-    return {
-        pid: WindowValue(points=sum(values) / len(values),
-                         sources=tuple(sorted(seen.get(pid, ()))))
-        for pid, values in totals.items() if values
-    }
+                weekly_points.setdefault(player_id, []).append((week, projection.points))
+                weekly_sources.setdefault(player_id, {})[week] = projection.sources
+
+    out: dict[str, WindowValue] = {}
+    for player_id, entries in weekly_points.items():
+        spikes = _spike_weeks(entries)
+        kept = [(week, points) for week, points in entries if week not in spikes]
+        if not kept:  # unreachable: a spike needs a lower week to stand above
+            kept, spikes = entries, frozenset()
+        if spikes:
+            log.warning(
+                "dropped implausible weekly projection(s) for %s: %s against %.1f elsewhere",
+                player_id,
+                ", ".join(f"week {w} at {p:.1f}" for w, p in entries if w in spikes),
+                max(p for _, p in kept),
+            )
+        sources = {s for week, _ in kept for s in weekly_sources[player_id].get(week, ())}
+        out[player_id] = WindowValue(
+            points=sum(p for _, p in kept) / len(kept),
+            sources=tuple(sorted(sources)),
+            excluded=tuple(sorted(spikes)),
+        )
+    return out
 
 
 def _season_per_game(stats: Mapping[str, Any] | None, scoring: Mapping[str, Any]) -> float | None:
