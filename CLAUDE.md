@@ -121,7 +121,21 @@ to get wrong, in the order they bite:
   because the scoreboards the waiver report wants are handed to it rather than fetched
   again. 5.07s to 1.30s, medians of cold builds against a real league. Past that point the
   measured breakdown is: ESPN's revalidated feed 0.23s of the critical path, the Sleeper
-  wave about 0.5s, and 0.5s of CPU after it -- there is no single pole left to pull. Three things that
+  wave about 0.5s, and 0.5s of CPU after it -- there is no single pole left to pull.
+- **The Sleeper wave is connection setup, and there is nothing to tune.** A weekly
+  projection takes 0.06s on a warm connection and 0.6s inside a build, which looks like
+  throttling and is not: eight requests on a cold client take 0.74s each, 0.52s after one
+  connection is warm, and 0.26s once the pool has eight. It is TLS, it is already paid in
+  parallel, and it costs about one handshake per build. Removing ESPN's work entirely
+  changes it by nothing, and the build is flat from four workers to sixteen (1.66s to
+  1.71s, all inside the noise), so `FETCH_WORKERS` is not a dial worth turning again.
+  What would help is reusing connections *between* builds, which the ten-minute feed cache
+  makes pointless: httpx expires a keepalive connection after five seconds.
+- **Blending inside the fetch jobs is slower, not faster.** The arithmetic needs only that
+  week's two feeds, so folding it into the job that fetched the week looks free -- it
+  measured 0.05s *worse* in three pairs out of three. The blend has to wait for the ESPN
+  feed, and eight jobs waiting on it inside a twelve-worker pool starve the fixtures and
+  the report behind them. Measure before trying it again. Three things that
   each looked small and were not: the waiver report belongs *in* the wave, since nothing
   before the advice reads it; the pool needs room for the whole wave, because one slow job
   in each of six slots leaves the other sixteen queued (six at a time measured 1.51s
@@ -450,8 +464,15 @@ team's odds at every win total still open to it -- then a picker for one team's 
   percentages, news and draft ranks around the few hundred bytes this tool reads, and
   keeping the page meant `json.loads` on 25MB every build -- as slow as the download it
   replaced, which is why the first version of this cache bought 0.05s. `_extract` keeps
-  identity plus each week's projected stat line, 4.3MB in all, and `CACHE_VERSION` is in
-  the filename so that changing what is kept invalidates by not matching.
+  identity plus each week's projected stat line, and `CACHE_VERSION` is in the filename so
+  that changing what is kept invalidates by not matching; `_prune_cache` deletes the older
+  versions, since nothing else ever would.
+- **The stats are translated on the way in, not on the way out.** ESPN's numeric stat ids
+  become Sleeper's keys when the page is read rather than for every player in every week
+  of every build -- a thousand players by eight weeks is eight thousand dictionaries that
+  were being rebuilt from ids that had not changed. The warm feed went 0.237s to 0.137s
+  and the cache 4.3MB to 2.1MB, because the untranslatable ids are dropped on the way in
+  too.
 - The ESPN player feed is paged, and all the pages are fetched at once. They used to go
   one-then-four, so that a pool smaller than one page could not waste four requests -- a
   case ESPN's feed never produces, since it is a thousand players deep all season, and one

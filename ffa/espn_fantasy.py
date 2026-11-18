@@ -45,7 +45,7 @@ PAGE_SIZE = 200
 # Where revalidated pages live, under the cache directory the rest of the tool uses. The
 # version is in the filename: a change to what is kept invalidates by not matching.
 CACHE_SUBDIR = "espn"
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 DEFAULT_PAGES = 5  # ~1000 players by percent owned: every rostered player and every
                    # plausible waiver target. The whole pool is only ~1050.
 PROJECTED = 1  # statSourceId: 1 projected, 0 actual
@@ -218,11 +218,16 @@ def parse_player(row: Mapping[str, Any], season: int, week: int) -> ESPNPlayer |
 
 
 def _prune_cache(directory: Path, keep: str) -> None:
-    """Drop pages from other weeks. Only the current context is ever revalidated again,
-    and each page is four megabytes, so last week's would sit there for the season."""
+    """Drop pages from other weeks, and from older versions of what is kept.
+
+    Only the current week's pages are ever revalidated again, and a page is megabytes, so
+    last week's would sit there for the season. The version goes the same way: a bump
+    means the old files can never be read again, and nothing else would ever delete them.
+    """
+    suffix = f".v{CACHE_VERSION}.page"
     try:
         for stale in directory.glob("*.page"):
-            if not stale.name.startswith(keep):
+            if not stale.name.startswith(keep) or not stale.name.endswith(suffix):
                 stale.unlink(missing_ok=True)
     except OSError as exc:
         log.debug("Could not prune the ESPN page cache: %s", exc)
@@ -264,9 +269,12 @@ def _extract(rows: Sequence[Any], season: int) -> _Page:
                 and isinstance(entry.get("scoringPeriodId"), int)
             ):
                 # First row wins, as it did when each week was scanned for on its own.
+                # Stats are translated here rather than on the way out: ESPN's numeric
+                # ids become Sleeper's keys once, when the page is read, instead of for
+                # every player in every week of every build.
                 weeks.setdefault(str(entry["scoringPeriodId"]), {
                     "applied": entry.get("appliedTotal"),
-                    "stats": entry.get("stats") or {},
+                    "stats": translate_stats(entry.get("stats")),
                 })
         players.append({"id": who.espn_id, "name": who.name, "pos": who.position,
                         "team": who.team, "weeks": weeks})
@@ -274,17 +282,23 @@ def _extract(rows: Sequence[Any], season: int) -> _Page:
 
 
 def _players_for_week(page: _Page, week: int) -> list[ESPNPlayer]:
-    """One week's players, built from an extract rather than from the page it came from."""
+    """One week's players, built from an extract rather than from the page it came from.
+
+    The stats arrive already translated, which is the whole of what this does per build:
+    a thousand players times eight weeks is eight thousand dictionaries that used to be
+    rebuilt from ESPN's stat ids every time, and the ids do not change between builds.
+    """
+    key = str(week)
     out = []
     for kept in page.players:
-        entry = (kept.get("weeks") or {}).get(str(week))
+        entry = (kept.get("weeks") or {}).get(key)
         applied = entry.get("applied") if entry else None
         out.append(ESPNPlayer(
             espn_id=kept["id"],
             name=kept["name"],
             position=kept["pos"],
             team=kept["team"],
-            stats=translate_stats(entry.get("stats") if entry else None),
+            stats=entry.get("stats") or {} if entry else {},
             applied_total=float(applied) if isinstance(applied, (int, float)) else None,
         ))
     return out
