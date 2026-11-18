@@ -119,7 +119,7 @@ to get wrong, in the order they bite:
   played. Nothing in that list needs anything from anything else in it, so it all goes
   through `fanout.gather` at once -- and *fewer* requests than before (38 against 41),
   because the scoreboards the waiver report wants are handed to it rather than fetched
-  again. 5.07s to 1.79s, medians of cold builds against a real league. Three things that
+  again. 5.07s to 1.46s, medians of cold builds against a real league. Three things that
   each looked small and were not: the waiver report belongs *in* the wave, since nothing
   before the advice reads it; the pool needs room for the whole wave, because one slow job
   in each of six slots leaves the other sixteen queued (six at a time measured 1.51s
@@ -389,8 +389,9 @@ team's odds at every win total still open to it -- then a picker for one team's 
 - `WaiversFeed` and `LineupFeed` build each report with a *fresh* `SleeperClient`: that
   client caches rosters, transactions and the NFL state for its own lifetime, which is
   right for a one-shot command and wrong for a server that stays up for days. `LineupFeed`
-  caches for ten minutes and builds synchronously: a cold build measured about 2.4s, which
-  is a better trade than a worker thread and a progress protocol. It was 5.1s until the
+  caches for ten minutes and builds synchronously: a cold build measured about 1.5s with
+  the ESPN pages revalidated and 1.95s with that cache empty, which is a better trade than
+  a worker thread and a progress protocol. It was 5.1s until the
   fetches were made to overlap and ESPN's was started first (see Lineup above); the phone
   says "working it out…" for exactly that long, so measure before adding anything to the
   wave. `load_advice` itself has no offline test -- the web tests inject a whole loader --
@@ -436,6 +437,19 @@ team's odds at every win total still open to it -- then a picker for one team's 
 - Tunable shortlist weights are named constants at the top of `draft/scarcity.py`.
 - Recordings are JSON Lines (header, then snapshots) tagged `"draftbot-recording/1"`. Keep
   that tag: existing recordings depend on it.
+- **The ESPN feed is revalidated, not re-downloaded.** It sends an `ETag` and answers a
+  request carrying it with `304 Not Modified` in 0.02s and no body, against 0.23s and
+  4.1MB for one page. So each page is kept under `cache/espn` with its tag and sent back
+  as `If-None-Match`. This is not a staleness trade and must not become one: the *server*
+  decides whether the data changed, and a changed projection comes back as a 200 with the
+  new body. Never add a time-based expiry here -- that would be the trade, and the whole
+  point is not making it.
+- **What is kept is the extract, not the page.** A page is four megabytes of ownership
+  percentages, news and draft ranks around the few hundred bytes this tool reads, and
+  keeping the page meant `json.loads` on 25MB every build -- as slow as the download it
+  replaced, which is why the first version of this cache bought 0.05s. `_extract` keeps
+  identity plus each week's projected stat line, 4.3MB in all, and `CACHE_VERSION` is in
+  the filename so that changing what is kept invalidates by not matching.
 - The ESPN player feed is paged, and all the pages are fetched at once. They used to go
   one-then-four, so that a pool smaller than one page could not waste four requests -- a
   case ESPN's feed never produces, since it is a thousand players deep all season, and one
@@ -456,7 +470,8 @@ team's odds at every win total still open to it -- then a picker for one team's 
 - Research credentials are checked in one place, `draft/research.py::build_worker`, which
   returns `(worker, reason)` and never raises; the CLI prints the reason, the web app shows
   it on the recommendation card.
-- `cache/` (gitignored) holds the player map, logs (`ffa.log`) and real draft recordings
+- `cache/` (gitignored) holds the player map, logs (`ffa.log`), the kept ESPN pages
+  (`espn/`, a few megabytes, pruned to the current week) and real draft recordings
   containing real Sleeper usernames and league IDs. Scrub them before turning one into a
   test fixture.
 

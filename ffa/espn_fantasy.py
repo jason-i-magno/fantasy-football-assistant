@@ -23,9 +23,11 @@ playoff-window number free: weeks 15 to 17 are already in the payload fetched fo
 
 import json
 import logging
+import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import Any, NamedTuple
 
 import httpx
@@ -40,6 +42,10 @@ PLAYER_FEED_URL = (
     "/segments/0/leaguedefaults/3"
 )
 PAGE_SIZE = 200
+# Where revalidated pages live, under the cache directory the rest of the tool uses. The
+# version is in the filename: a change to what is kept invalidates by not matching.
+CACHE_SUBDIR = "espn"
+CACHE_VERSION = 1
 DEFAULT_PAGES = 5  # ~1000 players by percent owned: every rostered player and every
                    # plausible waiver target. The whole pool is only ~1050.
 PROJECTED = 1  # statSourceId: 1 projected, 0 actual
@@ -211,15 +217,144 @@ def parse_player(row: Mapping[str, Any], season: int, week: int) -> ESPNPlayer |
     return None if who is None else _player_for(who, _week_stats(row.get("player") or {}, season, week))
 
 
-def _page(client: httpx.Client, url: str, week: int, offset: int,
-          page_size: int) -> list[Any]:
-    """One page of the player feed, as rows. An empty page ends the walk."""
+def _prune_cache(directory: Path, keep: str) -> None:
+    """Drop pages from other weeks. Only the current context is ever revalidated again,
+    and each page is four megabytes, so last week's would sit there for the season."""
+    try:
+        for stale in directory.glob("*.page"):
+            if not stale.name.startswith(keep):
+                stale.unlink(missing_ok=True)
+    except OSError as exc:
+        log.debug("Could not prune the ESPN page cache: %s", exc)
+
+
+def _cache_file(cache_dir: Path, season: int, week: int, offset: int) -> Path:
+    return (Path(cache_dir) / CACHE_SUBDIR
+            / f"{season}-{week}-{offset}.v{CACHE_VERSION}.page")
+
+
+class _Page(NamedTuple):
+    """What a page is worth keeping: how many rows it held, and what we read out of them."""
+
+    rows: int  # the page's own length, which is what decides whether the walk goes on
+    players: list[dict[str, Any]]
+
+
+def _extract(rows: Sequence[Any], season: int) -> _Page:
+    """The parts of a page this tool ever reads, and nothing else.
+
+    A page is four megabytes of ownership percentages, news, ratings and draft ranks around
+    the few hundred bytes that matter. Keeping the page meant `json.loads` on 25MB every
+    build -- as slow as the download it was meant to replace -- so what is kept is this:
+    who the player is, and his projected stat line for each week the payload carries.
+    """
+    players: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        who = _identity(row)
+        if who is None:
+            continue
+        weeks: dict[str, Any] = {}
+        for entry in who.raw.get("stats") or ():
+            if (
+                entry.get("statSourceId") == PROJECTED
+                and entry.get("statSplitTypeId") == SEASON_SPLIT
+                and entry.get("seasonId") == season
+                and isinstance(entry.get("scoringPeriodId"), int)
+            ):
+                # First row wins, as it did when each week was scanned for on its own.
+                weeks.setdefault(str(entry["scoringPeriodId"]), {
+                    "applied": entry.get("appliedTotal"),
+                    "stats": entry.get("stats") or {},
+                })
+        players.append({"id": who.espn_id, "name": who.name, "pos": who.position,
+                        "team": who.team, "weeks": weeks})
+    return _Page(rows=len(rows), players=players)
+
+
+def _players_for_week(page: _Page, week: int) -> list[ESPNPlayer]:
+    """One week's players, built from an extract rather than from the page it came from."""
+    out = []
+    for kept in page.players:
+        entry = (kept.get("weeks") or {}).get(str(week))
+        applied = entry.get("applied") if entry else None
+        out.append(ESPNPlayer(
+            espn_id=kept["id"],
+            name=kept["name"],
+            position=kept["pos"],
+            team=kept["team"],
+            stats=translate_stats(entry.get("stats") if entry else None),
+            applied_total=float(applied) if isinstance(applied, (int, float)) else None,
+        ))
+    return out
+
+
+def _read_page_cache(path: Path) -> tuple[str | None, _Page] | None:
+    """A page kept from last time, as `(etag, body)`, or None if there isn't a usable one.
+
+    Anything wrong with the file -- missing, truncated, half-written, unreadable -- means
+    no cache rather than an error. A cache is an optimisation and must never be a way for
+    a build to fail.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    etag, sep, body = raw.partition(b"\n")
+    if not sep or not body:
+        return None
+    try:
+        kept = json.loads(body)
+        page = _Page(rows=int(kept["rows"]), players=list(kept["players"]))
+    except (ValueError, TypeError, KeyError):
+        return None
+    return (etag.decode("utf-8", "replace") or None), page
+
+
+def _write_page_cache(path: Path, etag: str | None, page: _Page) -> None:
+    """Keep a page for next time, written where a half-written file cannot be read.
+
+    The pages of one build are fetched at once and two processes can be building at once,
+    so the file is written beside its name and moved onto it, which is atomic on every
+    filesystem this runs on.
+    """
+    if not etag:
+        return  # nothing to revalidate against later, so nothing worth keeping
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = json.dumps({"rows": page.rows, "players": page.players}).encode()
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        temporary.write_bytes(etag.encode() + b"\n" + body)
+        os.replace(temporary, path)
+    except OSError as exc:  # a full or read-only disk is not a reason to fail a build
+        log.debug("Could not cache ESPN page %s: %s", path.name, exc)
+
+
+def _page(client: httpx.Client, url: str, season: int, week: int, offset: int,
+          page_size: int, cache_dir: Path | None = None) -> _Page:
+    """One page of the player feed, read down to what this tool uses.
+
+    The feed is eleven megabytes a build and the slowest thing in one, so the page is
+    revalidated rather than re-downloaded: ESPN sends an `ETag`, and answers a request
+    carrying it with `304 Not Modified` in 0.02s and no body at all, against 0.23s and
+    4.1MB for the first page alone. The server decides whether the data changed, so this
+    is not a staleness trade -- a changed projection comes back as a 200 with the new
+    body, exactly as if nothing were cached.
+    """
+    path = _cache_file(cache_dir, season, week, offset) if cache_dir is not None else None
+    cached = _read_page_cache(path) if path is not None else None
+    headers = {"X-Fantasy-Filter": _filter_header(offset, page_size)}
+    if cached is not None and cached[0]:
+        headers["If-None-Match"] = cached[0]
     try:
         response = client.get(
             url,
             params={"view": "kona_player_info", "scoringPeriodId": week},
-            headers={"X-Fantasy-Filter": _filter_header(offset, page_size)},
+            headers=headers,
         )
+        if response.status_code == 304 and cached is not None:
+            return cached[1]
         response.raise_for_status()
         payload = response.json()
     except httpx.HTTPError as exc:
@@ -227,7 +362,10 @@ def _page(client: httpx.Client, url: str, week: int, offset: int,
     except ValueError as exc:
         raise ESPNFantasyError(f"ESPN sent invalid JSON for week {week} projections.") from exc
     rows = payload.get("players") if isinstance(payload, dict) else None
-    return rows if isinstance(rows, list) else []
+    page = _extract(rows if isinstance(rows, list) else [], season)
+    if path is not None:
+        _write_page_cache(path, response.headers.get("etag"), page)
+    return page
 
 
 def fetch_weeks(
@@ -237,6 +375,7 @@ def fetch_weeks(
     http: httpx.Client | None = None,
     pages: int = DEFAULT_PAGES,
     page_size: int = PAGE_SIZE,
+    cache_dir: Path | None = None,
 ) -> dict[int, list[ESPNPlayer]]:
     """ESPN's projections for several weeks, from one pass over the player feed.
 
@@ -265,25 +404,19 @@ def fetch_weeks(
         # a short page cuts short; the loop below still stops reading at a short page,
         # which is what decides the answer.
         fetched = gather({
-            page: partial(_page, client, url, first, page * page_size, page_size)
+            page: partial(_page, client, url, season, first, page * page_size, page_size,
+                          cache_dir)
             for page in range(budget)
         })
+        if cache_dir is not None:
+            _prune_cache(Path(cache_dir) / CACHE_SUBDIR, f"{season}-{first}-")
         for page in range(budget):
-            rows = fetched.get(page) or ()
-            if not rows:
+            kept = fetched.get(page)
+            if kept is None or not kept.rows:
                 break
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                who = _identity(row)
-                if who is None:
-                    continue
-                # One pass over this player's stats for every week asked for, rather than
-                # one pass per week: the row is read once and sliced.
-                entries = _weekly_stats(who.raw, season, wanted)
-                for week in wanted:
-                    out[week].append(_player_for(who, entries.get(week)))
-            if len(rows) < page_size:
+            for week in wanted:
+                out[week].extend(_players_for_week(kept, week))
+            if kept.rows < page_size:
                 break
     finally:
         if http is None:

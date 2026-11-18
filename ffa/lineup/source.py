@@ -105,7 +105,10 @@ def load_advice(
     # this is a wider net and never a different answer -- checked against ESPN: the same
     # request carrying a different `scoringPeriodId` returns identical rows for every week
     # either one asks about.
-    fetch_espn = espn_for or (lambda s, w: fetch_weeks(s, w, http=http))
+    # The feed's pages are revalidated rather than re-downloaded; `cache_dir` is where
+    # last build's copies live, beside the player map.
+    fetch_espn = espn_for or (
+        lambda s, w: fetch_weeks(s, w, http=http, cache_dir=client.cache_dir))
     espn_window = tuple(range(max(1, base - 1), _final_week(settings) + 1)) or (base,)
     espn_ready = start(partial(_espn_or_reason, fetch_espn, season, espn_window))
 
