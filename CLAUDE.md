@@ -27,8 +27,11 @@ No linter, formatter or type checker is configured. Config comes from `./.env` (
 `.env.example`); real environment variables win over the file.
 
 `main` is protected: changes land through pull requests, and the `tests` check
-(`.github/workflows/tests.yml`, pytest on Python 3.11 and 3.14) must pass to merge. CI runs
-with `--locked`, so a dependency change must ship with its updated `uv.lock`.
+(`.github/workflows/tests.yml`, pytest on 3.11, 3.14 and free-threaded 3.14t) must pass to
+merge. CI runs with `--locked`, so a dependency change must ship with its updated
+`uv.lock`. Auto-merge is enabled on the repository, so `gh pr merge <n> --squash --auto`
+queues the merge against that check rather than waiting on it -- GitHub merges when it
+goes green and does nothing if it does not.
 
 ## Privacy
 
