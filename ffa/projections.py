@@ -356,7 +356,9 @@ def weekly_projections(
 
 
 def average_per_game(
-    blended: Mapping[int, Mapping[str, Projection]], weeks: Sequence[int]
+    blended: Mapping[int, Mapping[str, Projection]],
+    weeks: Sequence[int],
+    reported: set[tuple[str, int]] | None = None,
 ) -> dict[str, WindowValue]:
     """The mean over `weeks` of blends already built, with corrupt rows left out.
 
@@ -364,6 +366,12 @@ def average_per_game(
     should only be built once; the judging of rows has to be here rather than there,
     because a corrupt row is only recognisable against the *other weeks in this window*
     and the two windows do not contain the same weeks.
+
+    Which is exactly why `reported` exists. The playoff weeks are the last of the weeks
+    still to be played, so one bad row is usually dropped by both windows and said twice,
+    and a log line that always appears in pairs reads like two findings. Pass the same set
+    to both calls and each player-week is announced once -- by whichever window judged it
+    first, and still by both if only one of them did.
     """
     # Kept per week rather than summed as it goes: a corrupt row can only be recognised
     # against the player's other weeks, which means holding them all before averaging any.
@@ -381,13 +389,17 @@ def average_per_game(
         kept = [(week, points) for week, points in entries if week not in spikes]
         if not kept:  # unreachable: a spike needs a lower week to stand above
             kept, spikes = entries, frozenset()
-        if spikes:
+        fresh = sorted(w for w in spikes if reported is None
+                       or (player_id, w) not in reported)
+        if fresh:
             log.warning(
                 "dropped implausible weekly projection(s) for %s: %s against %.1f elsewhere",
                 player_id,
-                ", ".join(f"week {w} at {p:.1f}" for w, p in entries if w in spikes),
+                ", ".join(f"week {w} at {p:.1f}" for w, p in entries if w in fresh),
                 max(p for _, p in kept),
             )
+            if reported is not None:
+                reported.update((player_id, w) for w in fresh)
         sources = {s for week, _ in kept for s in weekly_sources[player_id].get(week, ())}
         out[player_id] = WindowValue(
             points=sum(p for _, p in kept) / len(kept),

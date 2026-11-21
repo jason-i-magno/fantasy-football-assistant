@@ -214,6 +214,10 @@ def load_advice(
     # weeks still to be played, so a window built on its own blended weeks 15 to 17 twice
     # -- a tenth of a second of doing the same arithmetic again.
     blended: dict[int, Mapping[str, Projection]] = {}
+    # One announcement per bad row. The playoff weeks are the last of the weeks still to
+    # be played, so a row dropped from the rest-of-season window is usually dropped from
+    # the playoff one too, and saying it twice reads like two findings.
+    reported: set[tuple[str, int]] = set()
     per_game: dict[str, dict] = {}
     for name, weeks in (("rest", rest), ("playoff", window)):
         if not weeks:
@@ -226,7 +230,7 @@ def load_advice(
             espn_weeks=espn_weeks,
             blended=blended,
         )
-        per_game[name] = average_per_game(blended, weeks)
+        per_game[name] = average_per_game(blended, weeks, reported)
 
     projections: Mapping[str, Projection] = build(
         players=players,
