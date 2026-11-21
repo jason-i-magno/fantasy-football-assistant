@@ -236,8 +236,15 @@ to get wrong, in the order they bite:
   player's other weeks rather than the middle one, because a real role change is a step
   (every week after it is high, so nothing fires) while a bad row is alone. A median would
   throw away the first week of a demotion as corrupt. `WindowValue.excluded` carries what
-  was dropped and it is logged; the target week is left alone deliberately, having no other
-  week to be judged against.
+  was dropped; the target week is left alone deliberately, having no other week to be
+  judged against. It is logged **once per bad row, not once per window**: the playoff
+  weeks are the last of the weeks still to be played, so a row dropped from the
+  rest-of-season window is usually dropped from the playoff one too, and a warning that
+  always came in pairs read like two findings. `average_per_game` takes a set of the
+  player-weeks already announced and `load_advice` passes the same one to both windows --
+  the same shape the blends themselves are shared with. Both windows still drop the row;
+  only the saying is shared, and a window judging alone (`window_per_game`, with nobody to
+  share with) still speaks up.
 - **`role_change` is measured over the window, not over one week.** A hard matchup is not a
   demotion, and a player on a bye projects zero -- which made the one check that can see a
   changed role blind in precisely the week the stale row was the only number on the card.

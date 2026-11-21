@@ -615,3 +615,38 @@ def test_a_bumped_cache_version_takes_the_old_files_with_it(tmp_path):
         fetch_weeks(2026, [9], http=client, pages=1, cache_dir=tmp_path)
     kept = [p.name for p in (tmp_path / "espn").glob("*.page")]
     assert kept == [f"2026-9-0.v{ef.CACHE_VERSION}.page"]
+
+
+def test_a_dropped_row_is_announced_once_not_once_per_window(caplog):
+    """The playoff weeks are the last of the weeks still to be played, so a bad row is
+    usually judged twice and, until now, said twice. A log line that always appears in
+    pairs reads like two findings rather than one."""
+    rest = [11, 12, 13, 14, 15, 16, 17]
+    playoff = [15, 16, 17]
+    rows = {week: {"k1": proj.Projection(
+        player_id="k1", position="K", team="SF",
+        points=60.5 if week == 15 else 5.5, sources=("sleeper",))} for week in rest}
+
+    with caplog.at_level("WARNING", logger="ffa.projections"):
+        shared: set[tuple[str, int]] = set()
+        first = proj.average_per_game(rows, rest, shared)
+        second = proj.average_per_game(rows, playoff, shared)
+    said = [r for r in caplog.records if "implausible" in r.getMessage()]
+    assert len(said) == 1, [r.getMessage() for r in said]
+    assert "week 15" in said[0].getMessage()
+    # Both windows still *drop* it -- only the announcement is shared.
+    assert first["k1"].excluded == (15,) and second["k1"].excluded == (15,)
+    assert first["k1"].points == pytest.approx(5.5)
+
+
+def test_without_a_shared_set_every_window_still_says_it(caplog):
+    """`window_per_game` has one window and no one to share with, so the default has to
+    be to speak up."""
+    weeks = [15, 16, 17]
+    rows = {week: {"k1": proj.Projection(
+        player_id="k1", position="K", team="SF",
+        points=60.5 if week == 15 else 5.5, sources=("sleeper",))} for week in weeks}
+    with caplog.at_level("WARNING", logger="ffa.projections"):
+        proj.average_per_game(rows, weeks)
+        proj.average_per_game(rows, weeks)
+    assert len([r for r in caplog.records if "implausible" in r.getMessage()]) == 2
