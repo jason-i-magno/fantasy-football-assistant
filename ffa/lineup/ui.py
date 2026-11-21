@@ -13,7 +13,7 @@ from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
 
-from ..playoffs import PlayoffPicture, TeamOutlook, WinOdds
+from ..playoffs import PlayoffPicture, Swing, TeamOutlook, WinOdds
 from ..strength import MIN_WEEKS
 from ..waivers.status import FREE_AGENT, WAIVERS
 from .advice import AddCandidate, LineupAdvice, PlayerLine
@@ -269,10 +269,56 @@ def playoffs_table(view: LeagueView) -> RenderableType:
         f"Odds = {odds_basis(picture)}.",
         style="dim",
     )
-    parts: list[RenderableType] = [grid, footer, Text(), by_wins_table(picture, names, mine)]
+    parts: list[RenderableType] = [grid, footer]
+    watch = watch_table(picture, names)
+    if watch is not None:
+        parts += [Text(), watch]
+    parts += [Text(), by_wins_table(picture, names, mine)]
     if picture.notes:
         parts.append(Text("; ".join(picture.notes), style="yellow"))
     return Group(*parts)
+
+
+# Below a swing of this much, a fixture is not worth a line: a third of a point of odds
+# is inside the simulation's own noise, never mind the week's.
+WORTH_WATCHING = 0.01
+
+
+def watch_table(picture: PlayoffPicture, names: Mapping[int, str]) -> RenderableType | None:
+    """This week's fixtures, by what each one does to your odds.
+
+    The race says what you need; it cannot say which of the games you are not playing in
+    decides whether you get it. A manager on the cut line spends Sunday watching other
+    people's matchups, and until now the card had nothing to say about them -- the list
+    below is read out of the trials already drawn, so it costs nothing to know.
+    """
+    if picture.focus is None or not picture.swings:
+        return None
+    worth = [s for s in picture.swings if s.swing >= WORTH_WATCHING]
+    if not worth:
+        return None
+    you = picture.team(picture.focus)
+    week = picture.swings[0].week
+    grid = Table(show_edge=False, pad_edge=False, title_justify="left",
+                 title=f"Worth watching in week {week} — your odds are "
+                       f"{(you.odds if you else 0) * 100:.0f}%")
+    grid.add_column("Fixture")
+    grid.add_column("Root for")
+    grid.add_column("Swing", justify="right")
+    for swing in worth:
+        yours = picture.focus in (swing.first, swing.second)
+        fixture = (f"{names.get(swing.first, swing.first)}  v  "
+                   f"{names.get(swing.second, swing.second)}")
+        root = names.get(swing.root_for, "—") if swing.root_for else "—"
+        grid.add_row(
+            Text(fixture, style="bold" if yours else ""),
+            Text("your win" if yours else root,
+                 style="green" if swing.swing >= 0.05 else ""),
+            Text(f"{swing.swing * 100:.0f}", style="" if swing.swing >= 0.05 else "dim"),
+        )
+    return Group(grid, Text(
+        "Swing = the gap between your odds if one side wins and your odds if the other "
+        "does.", style="dim"))
 
 
 def by_wins_table(picture: PlayoffPicture, names: Mapping[int, str],
@@ -446,6 +492,22 @@ def playoffs_json(view: LeagueView) -> dict[str, Any] | None:
         "games_left": picture.games_left,
         "trials": picture.trials,
         "notes": list(picture.notes),
+        "focus": picture.focus,
+        "swings": [
+            {
+                "week": swing.week,
+                "first": swing.first,
+                "second": swing.second,
+                "first_name": names.get(swing.first, (f"Roster {swing.first}",))[0],
+                "second_name": names.get(swing.second, (f"Roster {swing.second}",))[0],
+                "if_first": round(swing.if_first, 4),
+                "if_second": round(swing.if_second, 4),
+                "swing": round(swing.swing, 4),
+                "root_for": swing.root_for,
+                "mine": picture.focus in (swing.first, swing.second),
+            }
+            for swing in picture.swings if swing.swing >= WORTH_WATCHING
+        ],
         "basis": odds_basis(picture),
         "pace_note": pace_text(picture),
         "scoring": None if picture.scoring is None else {

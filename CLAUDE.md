@@ -315,6 +315,21 @@ League tab and `ffa lineup --teams` draw the same numbers.
   the right way round, because the thin ends are the totals the arithmetic answers outright.
   The row is monotone (an extra win also denies a rival one), and a dip on screen is noise,
   so `test_more_wins_never_lower_the_odds` sweeps seeded leagues for one.
+- **Which other games to watch is the third reading of the same trials.** The race says
+  what a team needs; it cannot say which of the twenty fixtures it is *not* playing in
+  decide whether it gets there, and on the cut line those are most of what a Sunday
+  consists of. `Swing` is, per fixture, that roster's odds in the trials where each side
+  won it -- so it costs the bucketing and nothing else, five milliseconds measured against
+  the race's sixty. Only the first open week is watched, because a list of games to root
+  for is worth drawing for the Sunday somebody can actually watch.
+  **`spotlight` is a count, not a list of fixtures.** The same two rosters can meet twice
+  in a season, so a `(first, second)` pair does not identify a game; `games` emits them in
+  week order, which makes position the only honest key. A two-team league plays the same
+  pair every week and is what found this.
+  The swing counters live in each trial loop separately, so a test that only flips coins
+  leaves the *shipped* path unexercised -- `test_your_own_game_is_the_one_that_moves_your_odds_most`
+  runs against both simulations for that reason, after a mutation of the scored loop went
+  unnoticed by the coin-only tests.
 - **Tiebreaks stay out of the guaranteed numbers.** A clinch assumes every team level with
   you wins the tiebreak, an elimination assumes you do. That is what makes the number a
   guarantee: the tiebreak is points-for, and those points have not been scored yet. The
@@ -417,8 +432,9 @@ The second half is the whole module. Measured the same week on the two `.env` le
 package, like `draft/prompts/research.md`). Four tabs: Lineup (the default), League,
 Waivers, Draft. Lineup and League are drawn from one `/api/lineup` response, so opening the
 second costs nothing and cannot show a number the first disagrees with. The League tab leads
-with the playoff race for the whole league -- what each team needs, and a grid of every
-team's odds at every win total still open to it -- then a picker for one team's lineup.
+with the playoff race for the whole league -- what each team needs, this week's fixtures
+ranked by how much each moves *your* odds, and a grid of every team's odds at every win
+total still open to it -- then a picker for one team's lineup.
 
 - Nothing fantasy-related lives in the browser. `payload.py` renders the same `DraftView`
   `ui.py` draws, so a fix to the pipeline reaches both surfaces at once. If the UI needs a

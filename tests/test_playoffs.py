@@ -420,7 +420,7 @@ def test_the_buckets_are_the_same_sample_as_the_headline_odds():
     remaining = ((1, 2), (3, 4), (5, 6), (1, 3), (2, 5), (4, 6))
     record = {s.roster_id: s.record for s in standings}
     points = {s.roster_id: s.points_for for s in standings}
-    chances, buckets = P._odds(record, points, remaining, 3, 1_000)
+    chances, buckets, _ = P._odds(record, points, remaining, 3, 1_000)
     for team, rows in buckets.items():
         assert sum(played for _, played in rows) == 1_000
         assert sum(made for made, _ in rows) == pytest.approx(chances[team] * 1_000)
@@ -478,7 +478,7 @@ def test_equal_scoring_is_the_coin_flip_it_replaced():
     index = {roster: slot for slot, roster in enumerate(order)}
     pairs = [(index[a], index[b]) for a, b in remaining]
     trials = 40_000
-    _, _, seen = P._score_trials([record[r] for r in order], [points[r] for r in order],
+    _, _, seen, _ = P._score_trials([record[r] for r in order], [points[r] for r in order],
                                  pairs, 3, trials, random.Random(P.ODDS_SEED),
                                  [130.0] * len(order), 22.0)
     for team, buckets in enumerate(seen):
@@ -535,7 +535,7 @@ def test_a_thin_cell_is_drawn_again_rather_than_left_thin():
     points = {s.roster_id: s.points_for for s in standings}
     order = sorted(record)
     index = {roster: slot for slot, roster in enumerate(order)}
-    _, _, seen = P._score_trials(
+    _, _, seen, _ = P._score_trials(
         [record[r] for r in order], [points[r] for r in order],
         [(index[a], index[b]) for a, b in remaining], 3, P.ODDS_TRIALS,
         random.Random(P.ODDS_SEED), [means[r] for r in order], 22.0)
@@ -558,7 +558,7 @@ def test_a_cell_drawn_again_agrees_with_the_one_it_replaces():
     pairs = [(index[a], index[b]) for a, b in remaining]
     mu = [means[r] for r in order]
     rng = random.Random(3)
-    _, hits, seen = P._score_trials(base, start, pairs, 3, 40_000, rng, mu, 22.0)
+    _, hits, seen, _ = P._score_trials(base, start, pairs, 3, 40_000, rng, mu, 22.0)
     checked = 0
     for team in range(len(order)):
         for wins in range(len(seen[team])):
@@ -633,6 +633,122 @@ def test_the_weeks_already_scored_are_the_other_half_of_the_boundary():
     # No week belongs to both: one in progress is scored but not recorded, and is in
     # neither, which is the whole reason both read the same two fields.
     assert not set(P.scored_weeks(SETTINGS)) & set(P.undecided_weeks(SETTINGS, final_week=14))
+
+
+# -- which other games to watch ---------------------------------------------------------
+
+
+def test_the_swing_of_each_fixture_matches_exhaustive_enumeration():
+    """The oracle again, for the third reading of the trials.
+
+    Every outcome of a small league, counted both ways round each watched fixture. What is
+    being checked is not the arithmetic of a difference but the bucketing: that the trials
+    where a side won are the trials being averaged, for the right side of the right game.
+    """
+    standings = table((5, 3), (4, 4), (4, 4), (3, 5))
+    remaining = ((1, 2), (3, 4), (1, 3), (2, 4))
+    for focus in (1, 2, 3, 4):
+        picture = P.build_picture(table=standings, remaining=remaining, spots=2,
+                                  final_week=14, trials=20_000, focus=focus,
+                                  spotlight=len(remaining))
+        exact = _enumerate_swings(standings, remaining, 2, focus)
+        assert len(picture.swings) == len(remaining)
+        for swing in picture.swings:
+            want_first, want_second = exact[(swing.first, swing.second)]
+            assert swing.if_first == pytest.approx(want_first, abs=0.02), (focus, swing)
+            assert swing.if_second == pytest.approx(want_second, abs=0.02), (focus, swing)
+
+
+def _enumerate_swings(standings, remaining, spots, focus):
+    """P(focus makes it | each side wins), per fixture, by playing out every outcome."""
+    ids = [s.roster_id for s in standings]
+    record = {s.roster_id: s.record for s in standings}
+    points = {s.roster_id: s.points_for for s in standings}
+    tally = {game: [[0, 0], [0, 0]] for game in remaining}  # [made, seen] per side
+    for mask in range(1 << len(remaining)):
+        final = dict(record)
+        for index, (first, second) in enumerate(remaining):
+            final[first if (mask >> index) & 1 else second] += 1.0
+        order = sorted(ids, key=lambda t: (-final[t], -points[t]))
+        made = focus in order[:spots]
+        for index, game in enumerate(remaining):
+            side = (mask >> index) & 1
+            tally[game][side][1] += 1
+            if made:
+                tally[game][side][0] += 1
+    return {game: (sides[1][0] / sides[1][1], sides[0][0] / sides[0][1])
+            for game, sides in tally.items()}
+
+
+def test_the_two_sides_average_back_to_the_headline():
+    """One sample read three ways, so they have to agree: the odds given each result,
+    weighted by how often that result came up, are the odds."""
+    standings = table((5, 3), (4, 4), (4, 4), (3, 5), (3, 5), (2, 6))
+    remaining = ((1, 2), (3, 4), (5, 6), (1, 3), (2, 5), (4, 6))
+    record = {s.roster_id: s.record for s in standings}
+    points = {s.roster_id: s.points_for for s in standings}
+    chances, _, swung = P._odds(record, points, remaining, 3, 4_000,
+                                focus=2, spotlight=range(len(remaining)))
+    for (made, seen) in swung:
+        total = seen[0] + seen[1]
+        blended = (made[0] + made[1]) / total
+        assert blended == pytest.approx(chances[2], abs=1e-9)
+        assert total == 4_000
+
+
+@pytest.mark.parametrize("model", ["coin flips", "scoring"])
+def test_your_own_game_is_the_one_that_moves_your_odds_most(model):
+    """Not a law -- a pivotal rival fixture can beat it -- but it is true here, and the
+    sign is: winning your own game cannot be worth less than losing it.
+
+    Run against both simulations on purpose. The swing counters live in each trial loop
+    separately, and a real build uses the scored one, so a test that only ever flips coins
+    leaves the shipped path unexercised -- which it did, until a mutation of the scored
+    loop's fixture offset went unnoticed.
+    """
+    standings, remaining = even_league(weeks=3, size=6)
+    ids = [s.roster_id for s in standings]
+    means = {roster: 110.0 + 6 * index for index, roster in enumerate(ids)}
+    picture = P.build_picture(
+        table=standings, remaining=remaining, spots=3, final_week=14,
+        focus=ids[0], spotlight=len(remaining),
+        scoring=scoring(means) if model == "scoring" else None,
+    )
+    mine = [s for s in picture.swings if ids[0] in (s.first, s.second)]
+    assert mine, "the focus roster plays in this week"
+    for swing in mine:
+        winning = swing.if_first if swing.first == ids[0] else swing.if_second
+        losing = swing.if_second if swing.first == ids[0] else swing.if_first
+        assert winning > losing
+    assert max(s.swing for s in mine) == max(s.swing for s in picture.swings)
+
+
+def test_only_the_fixtures_asked_about_come_back():
+    standings, remaining = even_league(weeks=3, size=6)
+    picture = P.build_picture(table=standings, remaining=remaining, spots=3,
+                              final_week=14, focus=standings[0].roster_id,
+                              spotlight=3)
+    assert {(s.first, s.second) for s in picture.swings} == set(remaining[:3])
+    assert [s.swing for s in picture.swings] == sorted(
+        (s.swing for s in picture.swings), reverse=True), "biggest mover first"
+
+
+def test_nobody_to_focus_on_is_nothing_to_watch():
+    standings, remaining = even_league(weeks=3, size=6)
+    bare = P.build_picture(table=standings, remaining=remaining, spots=3, final_week=14)
+    assert bare.swings == () and bare.focus is None
+    stranger = P.build_picture(table=standings, remaining=remaining, spots=3,
+                               final_week=14, focus=999, spotlight=len(remaining))
+    assert stranger.swings == (), "a roster that is not in this league watches nothing"
+
+
+def test_a_team_already_through_has_nothing_riding_on_sunday():
+    standings = table((8, 0), (7, 1), (1, 7), (0, 8))
+    remaining = ((1, 2), (3, 4))
+    picture = P.build_picture(table=standings, remaining=remaining, spots=2,
+                              final_week=14, focus=1, spotlight=len(remaining))
+    assert picture.team(1).clinched
+    assert all(s.swing == 0.0 for s in picture.swings)
 
 
 # -- the league shapes that are refused rather than guessed ----------------------------

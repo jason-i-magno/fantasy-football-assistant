@@ -149,6 +149,36 @@ class TeamOutlook:
 
 
 @dataclass(frozen=True, slots=True)
+class Swing:
+    """What one fixture is worth to one team, depending on who wins it.
+
+    Not a fixture the team plays in, usually. A manager on the cut line spends Sunday
+    watching other people's games, and the race as drawn cannot say which of them to
+    watch: "you need two wins" is about your own four games and silent about the twenty
+    others that decide who you are measured against.
+    """
+
+    week: int
+    first: int  # the two roster ids, in the order the fixture carries them
+    second: int
+    if_first: float  # the team's odds in the trials where `first` won this game
+    if_second: float
+    trials: int  # trials behind the thinner of the two sides
+
+    @property
+    def swing(self) -> float:
+        """How much the result moves the odds, either way."""
+        return abs(self.if_first - self.if_second)
+
+    @property
+    def root_for(self) -> int | None:
+        """The roster to want, or None when it makes no odds either way."""
+        if self.if_first == self.if_second:
+            return None
+        return self.first if self.if_first > self.if_second else self.second
+
+
+@dataclass(frozen=True, slots=True)
 class PlayoffPicture:
     """The race for one league, at one moment."""
 
@@ -160,6 +190,8 @@ class PlayoffPicture:
     teams: tuple[TeamOutlook, ...] = ()
     notes: tuple[str, ...] = ()
     scoring: Scoring | None = None  # None when every game was a coin flip
+    focus: int | None = None  # whose odds `swings` are about
+    swings: tuple[Swing, ...] = ()  # this week's fixtures, the biggest mover first
 
     def team(self, roster_id: int | None) -> TeamOutlook | None:
         return next((t for t in self.teams if t.roster_id == roster_id), None)
@@ -299,6 +331,8 @@ def build_picture(
     trials: int = ODDS_TRIALS,
     notes: Sequence[str] = (),
     scoring: Scoring | None = None,
+    focus: int | None = None,
+    spotlight: int = 0,
 ) -> PlayoffPicture:
     """Solve the race. Pure: everything here is arithmetic over what was passed in.
 
@@ -306,6 +340,17 @@ def build_picture(
     with the points accumulating into the tiebreak. Left out, every game is a coin flip and
     the tiebreak stays frozen at the points already scored. It changes nothing above: the
     clinch and survival numbers are arithmetic over the schedule and have no model in them.
+
+    `focus` and `spotlight` ask a second question of the same trials: of the first
+    `spotlight` fixtures, how much does each one move *that* roster's odds? It costs five
+    milliseconds -- the trials are already being drawn and each one already knows who won
+    every game -- and the reason it is the first few rather than all of them is that this
+    week's games are the ones a manager can do anything about.
+
+    `spotlight` is a count rather than a list of fixtures because the same two rosters can
+    meet twice in a season, so a fixture does not identify itself; `games` emits them in
+    week order, which makes position the only honest key. A two-team league plays the same
+    pair every week and found this.
     """
     record = {s.roster_id: s.record for s in table}
     points = {s.roster_id: s.points_for for s in table}
@@ -326,8 +371,12 @@ def build_picture(
                if not _settled(k, clinches[team], survivals[team])}
         for team, count in own.items()
     }
-    chances, buckets = _odds(record, points, remaining, spots, trials,
-                             scoring=scoring, wanted=wanted)
+    watched = list(range(min(max(0, spotlight), len(remaining))))
+    chances, buckets, swung = _odds(
+        record, points, remaining, spots, trials, scoring=scoring, wanted=wanted,
+        focus=focus if any(s.roster_id == focus for s in table) else None,
+        spotlight=watched,
+    )
 
     outlooks: list[TeamOutlook] = []
     for seed, standing in enumerate(table, start=1):
@@ -339,10 +388,23 @@ def build_picture(
             odds=chances.get(team, 0.0),
             by_wins=_by_wins(standing, own[team], clinch, survive, buckets.get(team, ())),
         ))
+    first_week = min(weeks_left) if weeks_left else final_week
+    swings = []
+    for position, (made, seen) in zip(watched, swung):
+        game = remaining[position]
+        if not seen[0] or not seen[1]:  # a fixture the sample never saw both ways
+            continue
+        swings.append(Swing(
+            week=first_week, first=game[0], second=game[1],
+            if_first=made[1] / seen[1], if_second=made[0] / seen[0],
+            trials=min(seen),
+        ))
+    swings.sort(key=lambda s: (-s.swing, s.first))
     return PlayoffPicture(
         spots=spots, final_week=final_week, weeks_left=tuple(weeks_left),
         games_left=len(remaining), trials=trials,
         teams=tuple(outlooks), notes=tuple(notes), scoring=scoring,
+        focus=focus, swings=tuple(swings),
     )
 
 
@@ -601,7 +663,10 @@ def _odds(
     *,
     scoring: Scoring | None = None,
     wanted: Mapping[int, set[int]] | None = None,
-) -> tuple[dict[int, float], dict[int, tuple[tuple[int, int], ...]]]:
+    focus: int | None = None,
+    spotlight: Sequence[int] = (),
+) -> tuple[dict[int, float], dict[int, tuple[tuple[int, int], ...]],
+           list[tuple[tuple[int, int], tuple[int, int]]]]:
     """How often each roster makes the playoffs over `trials` simulated seasons.
 
     Returns the chance for each roster, and the same trials split by how many of its own
@@ -620,37 +685,52 @@ def _odds(
 
     `wanted` names the cells the arithmetic has *not* already settled. Those are the only
     ones worth sampling, and the thin ones among them are drawn again by `_stratum`.
+
+    `focus` and `spotlight` ask a third thing of the same trials: for each fixture named in
+    `spotlight` (as offsets into `remaining`), how often the `focus` roster made the
+    playoffs in the trials where each side won it. Returned aligned with `spotlight`, as
+    `((made_if_second, made_if_first), (seen_if_second, seen_if_first))` -- index 1 is the
+    pair's first roster winning, because that is the bit the coin draw sets.
     """
     teams = sorted(record)
     if not teams or spots <= 0:
-        return dict.fromkeys(teams, 0.0), {}
+        return dict.fromkeys(teams, 0.0), {}, []
     if spots >= len(teams):
-        return dict.fromkeys(teams, 1.0), {}
+        return dict.fromkeys(teams, 1.0), {}, []
     index = {team: offset for offset, team in enumerate(teams)}
     base = [record[t] for t in teams]
     start = [points.get(t, 0.0) for t in teams]
-    pairs = [(index[a], index[b]) for a, b in remaining if a in index and b in index]
+    pairs: list[Game] = []
+    pair_of: dict[int, int] = {}
+    for position, (home, away) in enumerate(remaining):
+        if home in index and away in index:
+            pair_of[position] = len(pairs)
+            pairs.append((index[home], index[away]))
     if not pairs:
         ranked = sorted(range(len(teams)), key=lambda i: (-base[i], -start[i]))
         return ({teams[i]: 1.0 if place < spots else 0.0
-                 for place, i in enumerate(ranked)}, {})
+                 for place, i in enumerate(ranked)}, {}, [])
+    eyes = index.get(focus) if focus is not None else None
+    watch = [] if eyes is None else [pair_of[p] for p in spotlight if p in pair_of]
 
     rng = random.Random(ODDS_SEED)
     trials = max(1, trials)
     if scoring is None:
-        made, hits, seen = _coin_trials(base, start, pairs, spots, trials, rng)
+        made, hits, seen, swung = _coin_trials(base, start, pairs, spots, trials, rng,
+                                               eyes, watch)
     else:
         lookup = scoring.means
         means = [lookup.get(t, scoring.league_mean) for t in teams]
-        made, hits, seen = _score_trials(base, start, pairs, spots, trials, rng,
-                                         means, scoring.sd)
+        made, hits, seen, swung = _score_trials(base, start, pairs, spots, trials, rng,
+                                                means, scoring.sd, eyes, watch)
         _top_up(hits, seen, base, start, pairs, spots, rng, means, scoring.sd,
                 {index[t]: ks for t, ks in (wanted or {}).items() if t in index})
     return ({team: made[index[team]] / trials for team in teams},
-            {team: tuple(zip(hits[index[team]], seen[index[team]])) for team in teams})
+            {team: tuple(zip(hits[index[team]], seen[index[team]])) for team in teams},
+            swung)
 
 
-def _coin_trials(base, start, pairs, spots, trials, rng):
+def _coin_trials(base, start, pairs, spots, trials, rng, eyes=None, watch=()):
     """Every game a coin flip, and the tiebreak frozen at the points already scored.
 
     A team's own wins come out of the same draw in one operation: `want` holds the bits
@@ -669,6 +749,8 @@ def _coin_trials(base, start, pairs, spots, trials, rng):
     hits = [[0] * (bits.bit_count() + 1) for bits in mask]
     seen = [[0] * (bits.bit_count() + 1) for bits in mask]
     made = [0] * count
+    swing_made = [[0, 0] for _ in watch]
+    swing_seen = [[0, 0] for _ in watch]
     for _ in range(trials):
         tally = base.copy()
         draw = rng.getrandbits(width)
@@ -678,13 +760,26 @@ def _coin_trials(base, start, pairs, spots, trials, rng):
         wins = [(~(draw ^ want[i]) & mask[i]).bit_count() for i in range(count)]
         for i, won in enumerate(wins):
             seen[i][won] += 1
+        watching = False
         for i in order[:spots]:
             made[i] += 1
             hits[i][wins[i]] += 1
-    return made, hits, seen
+            watching = watching or i == eyes
+        for slot, offset in enumerate(watch):
+            side = (draw >> offset) & 1
+            swing_seen[slot][side] += 1
+            if watching:
+                swing_made[slot][side] += 1
+    return made, hits, seen, _swings(swing_made, swing_seen)
 
 
-def _score_trials(base, start, pairs, spots, trials, rng, means, sd):
+def _swings(made, seen):
+    """The per-fixture counts, as plain tuples, aligned with what was asked to be watched."""
+    return [(tuple(m), tuple(s)) for m, s in zip(made, seen)]
+
+
+def _score_trials(base, start, pairs, spots, trials, rng, means, sd,
+                  eyes=None, watch=()):
     """Two scores a game, drawn from what each team scores, and both kept.
 
     The win goes to the higher score and the scores themselves go into the points-for that
@@ -701,23 +796,39 @@ def _score_trials(base, start, pairs, spots, trials, rng, means, sd):
     hits = [[0] * (games + 1) for games in own]
     seen = [[0] * (games + 1) for games in own]
     made = [0] * count
+    swing_made = [[0, 0] for _ in watch]
+    swing_seen = [[0, 0] for _ in watch]
     gauss = rng.gauss
     for _ in range(trials):
         tally = base.copy()
         total = start.copy()
-        for first, second in pairs:
+        # Results collected into a bit per game, the same shape the coin draw already has,
+        # so a fixture's outcome is read the same way in both paths below.
+        drawn = 0
+        for offset, (first, second) in enumerate(pairs):
             ours, theirs = gauss(means[first], sd), gauss(means[second], sd)
             total[first] += ours
             total[second] += theirs
-            tally[first if ours > theirs else second] += 1.0
+            if ours > theirs:
+                tally[first] += 1.0
+                drawn |= 1 << offset
+            else:
+                tally[second] += 1.0
         order = sorted(range(count), key=lambda i: (-tally[i], -total[i]))
         wins = [round(tally[i] - base[i]) for i in range(count)]
         for i, won in enumerate(wins):
             seen[i][won] += 1
+        watching = False
         for i in order[:spots]:
             made[i] += 1
             hits[i][wins[i]] += 1
-    return made, hits, seen
+            watching = watching or i == eyes
+        for slot, offset in enumerate(watch):
+            side = (drawn >> offset) & 1
+            swing_seen[slot][side] += 1
+            if watching:
+                swing_made[slot][side] += 1
+    return made, hits, seen, _swings(swing_made, swing_seen)
 
 
 def _top_up(hits, seen, base, start, pairs, spots, rng, means, sd, wanted):

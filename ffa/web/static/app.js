@@ -877,7 +877,36 @@ function renderPlayoffs(data) {
     `Odds = ${race.basis || "if every game left were a coin flip"}.`,
     race.pace_note || "",
   ].filter(Boolean).join(" ");
+  renderWatch(race);
   renderOddsByWins(race);
+}
+
+// The fixtures to watch on Sunday, and which way to want each one. The race says what you
+// need; it cannot say which of the games you are *not* playing in decides whether you get
+// it, and that is most of them.
+function renderWatch(race) {
+  const games = race.swings || [];
+  show($("#playoff-watch-block"), games.length > 0);
+  if (!games.length) return;
+  const you = (race.teams || []).find((t) => t.roster_id === race.focus);
+  $("#playoff-watch-sub").textContent = you
+    ? `week ${games[0].week} · your odds are ${Math.round(you.odds * 100)}%`
+    : "";
+  const list = clear($("#playoff-watch"));
+  games.forEach((game) => {
+    const row = el("div", "lrow watch-row");
+    if (game.mine) row.classList.add("mine");
+    const main = el("div", "lmain");
+    main.append(el("span", "name", `${game.first_name} v ${game.second_name}`));
+    const root = game.root_for === game.first ? game.first_name : game.second_name;
+    main.append(el("span", "rec", game.mine ? "your game — win it" : `root for ${root}`));
+    row.append(main);
+    row.append(el("div", "swing" + (game.swing >= 0.05 ? " big" : ""),
+                 String(Math.round(game.swing * 100))));
+    list.append(row);
+  });
+  $("#playoff-watch-foot").textContent =
+    "Swing = the gap between your odds if one side wins and your odds if the other does.";
 }
 
 // Each team's whole row of win totals, which is the question one percentage cannot answer:

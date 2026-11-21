@@ -220,7 +220,8 @@ def build_league_view(
     return LeagueView(
         league_name=str(league.get("name") or ""), week=week, teams=tuple(cards),
         playoffs=None if schedule is None else race(
-            league, rosters, schedule, scoring=estimate(history or {}, projected=projected)),
+            league, rosters, schedule, focus=my_roster_id,
+            scoring=estimate(history or {}, projected=projected)),
     )
 
 
@@ -230,6 +231,7 @@ def race(
     schedule: Mapping[int, Sequence[Mapping]],
     *,
     scoring: Scoring | None = None,
+    focus: int | None = None,
 ) -> PlayoffPicture:
     """The playoff race from the table and the weeks still to be played.
 
@@ -253,8 +255,12 @@ def race(
     if blocked is not None:
         return PlayoffPicture(spots=spots, final_week=final_week, weeks_left=weeks,
                               games_left=0, trials=0, notes=(blocked,))
+    # The fixtures `focus` should be watching this week: its own, and the four others that
+    # decide who it is measured against. Only the first open week, because a list of games
+    # to root for is only worth drawing for the Sunday someone can actually watch.
     return build_picture(table=table, remaining=games(schedule, weeks), spots=spots,
-                         final_week=final_week, weeks_left=weeks, scoring=scoring)
+                         final_week=final_week, weeks_left=weeks, scoring=scoring,
+                         focus=focus, spotlight=len(games(schedule, weeks[:1])))
 
 
 def _notes(seats: Sequence[TeamSeat]) -> tuple[str, ...]:
