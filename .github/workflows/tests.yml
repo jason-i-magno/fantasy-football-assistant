@@ -19,3 +19,9 @@ jobs:
         run: uv run --locked --python 3.11 pytest
       - name: pytest on Python 3.14
         run: uv run --locked --python 3.14 pytest
+      # The default for this project (.python-version), and the one that runs the fetch
+      # wave on more than one core. Tested separately because a dependency can ship
+      # wheels for 3.14 and not for 3.14t, and that failure belongs here rather than on
+      # somebody's machine.
+      - name: pytest on free-threaded Python 3.14t
+        run: uv run --locked --python 3.14t pytest
