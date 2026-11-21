@@ -33,13 +33,26 @@ LAST_REGULAR_WEEK = 18
 # How many unrostered players to solve a lineup for. They are considered best-projection
 # first, and a full solve is well under a millisecond, so this is generous on purpose.
 ADD_POOL = 60
-# Report at most this many adds, and only ones that actually change the lineup by this much.
+# Report at most this many adds.
 MAX_ADDS = 6
 # The watchlist is a different question from the add list, so it gets its own cap.
 MAX_WATCH = 4
 # One bye at a position would otherwise crowd the list with interchangeable replacements.
 MAX_ADDS_PER_POSITION = 2
-MIN_ADD_GAIN = 0.1
+# What an add has to be worth, in this week's points, to be worth saying. The bar is
+# higher than a swap's because the action costs more: a swap rearranges players already
+# owned, while an add spends a waiver claim -- in both `.env` leagues a rolling priority,
+# so using it sends you to the back of the queue -- takes a roster spot and usually makes
+# somebody else droppable. Half a point of a hundred-and-thirty-point lineup is also well
+# inside what the two feeds disagree about on a single player, so below it the ranking is
+# noise. Measured live when this moved from 0.1: the band it removes held one 0.21-point
+# add across both leagues, while the adds worth having sat at 1.55 and 0.51.
+MIN_ADD_GAIN = 0.5
+# The watchlist is a softer claim -- worth owning, not worth claiming today -- and its
+# gain is per game over every week still to be played rather than points this Sunday. A
+# tenth of a point there is a different statement from a tenth here: sustained over seven
+# weeks it is most of a point of real lineup value, which is why this keeps the old bar.
+MIN_WATCH_GAIN = 0.1
 # A whole week's rearranging worth less than this is noise dressed as advice: two
 # projections inside a tenth of a point are the same number, and "go change your lineup" is
 # the wrong conclusion to draw from one.
@@ -485,13 +498,14 @@ def build_advice(
     )
     adds = _candidates(
         values={pid: l.points for pid, l in lines.items()},
-        basis="week", max_adds=max_adds, **shared,
+        basis="week", max_adds=max_adds, floor=MIN_ADD_GAIN, **shared,
     )
     taken = {c.line.player_id for c in adds}
     watch = tuple(
         c for c in _candidates(
             values={pid: l.keep for pid, l in lines.items()},
-            basis="season", max_adds=max_adds + len(taken), **shared,
+            basis="season", max_adds=max_adds + len(taken),
+            floor=MIN_WATCH_GAIN, **shared,
         )
         if c.line.player_id not in taken
     )[:MAX_WATCH]
@@ -535,6 +549,7 @@ def _candidates(
     horizon: Horizon,
     basis: str,
     max_adds: int,
+    floor: float,
 ) -> tuple[AddCandidate, ...]:
     """Unrostered players ranked by what they would add to the optimal lineup.
 
@@ -607,7 +622,7 @@ def _candidates(
         else:
             drop, total = None, solve(with_add)
         gain = total - baseline
-        if gain < MIN_ADD_GAIN:
+        if gain < floor:
             continue
         if projection.role_changed:
             line = replace(line, reasons=line.reasons
