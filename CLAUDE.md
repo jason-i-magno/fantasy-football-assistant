@@ -467,7 +467,13 @@ total still open to it -- then a picker for one team's lineup.
 
 - Nothing fantasy-related lives in the browser. `payload.py` renders the same `DraftView`
   `ui.py` draws, so a fix to the pipeline reaches both surfaces at once. If the UI needs a
-  number, add it to the payload rather than deriving it in JS.
+  number, add it to the payload rather than deriving it in JS -- and that rule is now
+  checked rather than remembered: `test_the_ui_reads_no_field_the_payloads_do_not_send`
+  reads every snake_case property access out of `app.js` and asserts the endpoints send
+  it. Payload keys are snake_case and every browser API is camelCase, so the underscore
+  is the whole discriminator; no JS parser, and it is exact on this file. A key renamed on
+  either side used to be `undefined` on the other -- a blank space on the phone and no
+  error anywhere.
 - One poll serves every screen. `DraftFeed` holds the newest view behind a lock and refuses
   to refetch inside the poll interval, so N phones are still one Sleeper cadence, and it
   polls on request rather than on a timer (no screen open, no traffic). Its error policy
@@ -505,8 +511,12 @@ total still open to it -- then a picker for one team's lineup.
   `ffa/web/static` by a `is_relative_to` check — keep both when adding routes.
 - Tests drive the app in-process through `httpx.WSGITransport` with a recording behind the
   draft feed and `FakeSleeper` behind the waivers feed, so `tests/test_web.py` stays offline
-  and sub-second like everything else. The JS has no test of its own beyond a check that it
-  only calls routes that exist; screenshot it if you change the rendering.
+  and sub-second like everything else. The JS still has no test of its own: what holds it
+  honest is that it only calls routes that exist and only reads fields the payloads send
+  (above). Neither says the rendering is right, so screenshot it if you change that.
+  `UI_READS_NOT_IN_FIXTURES` is the escape hatch for a field no fixture can produce, and
+  it is empty -- keep it that way if you can, because everything on it is a field nothing
+  checks.
 
 ## Constraints and gotchas
 
