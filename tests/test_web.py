@@ -6,6 +6,9 @@ is fed a recording, and the waivers feed gets the same `FakeSleeper` the CLI tes
 
 from pathlib import Path
 
+import re
+from dataclasses import replace
+
 import httpx
 
 from ffa import playoffs as P
@@ -641,3 +644,75 @@ def test_a_warning_never_lands_in_the_json_output():
         assert all(h.console.stderr for h in rich_handlers)
     finally:
         logging_module.getLogger().handlers[:] = before
+
+
+# -- the contract between the payloads and the UI ---------------------------------------
+
+# Fields the UI reads that no fixture here can produce, each with the state that would.
+# Keep this short: everything on it is a field nothing checks.
+UI_READS_NOT_IN_FIXTURES: set[str] = set()
+
+
+class _OneLeague:
+    """The smallest thing `/api/leagues` can describe: one configured league."""
+
+    def refs(self):
+        from ffa.leagues import LeagueRef
+
+        return [LeagueRef(league_id="1", name="A League", is_default=True)]
+
+
+def _payload_keys(value, into):
+    """Every key that appears anywhere in a payload, at any depth."""
+    if isinstance(value, dict):
+        into.update(value)
+        for nested in value.values():
+            _payload_keys(nested, into)
+    elif isinstance(value, list):
+        for nested in value:
+            _payload_keys(nested, into)
+    return into
+
+
+def _ui_reads():
+    """The payload fields `app.js` reads.
+
+    Payload keys are snake_case and every browser API is camelCase, so a property access
+    containing an underscore is a field this UI expects the server to send. That is a
+    one-line discriminator rather than a JS parser, and it is exact on this file.
+    """
+    script = (Path(__file__).parent.parent / "ffa" / "web" / "static" / "app.js").read_text()
+    return set(re.findall(r"\.([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b", script))
+
+
+def test_the_ui_reads_no_field_the_payloads_do_not_send(recording):
+    """The seam with nothing holding it: `payload.py` builds the JSON and `app.js` reads
+    it, and a key renamed on one side is `undefined` on the other -- a blank space on the
+    phone and no error anywhere. The rule in CLAUDE.md is that a number the UI needs goes
+    in the payload; this is that rule, checked.
+    """
+    state, _, _ = build_state(recording, lineup_loader=_advice_loader([]))
+    # The picker is the one payload the other fixtures leave empty, and an empty list
+    # carries no keys to check, so give it a league to describe.
+    state = replace(state, leagues=_OneLeague())
+    sent: set[str] = set()
+    with httpx.Client(transport=httpx.WSGITransport(app=create_app(state)),
+                      base_url="http://ffa.test") as client:
+        for route in ("/api/health", "/api/leagues", "/api/draft", "/api/lineup",
+                      "/api/waivers"):
+            body = client.get(route).json()
+            assert body.get("ok") is not False, (route, body)
+            _payload_keys(body, sent)
+    missing = sorted(_ui_reads() - sent - UI_READS_NOT_IN_FIXTURES)
+    assert not missing, (
+        f"app.js reads {missing} and no payload here sends it -- either the server stopped "
+        "sending it, or the UI is reading a field that never existed"
+    )
+
+
+def test_every_field_the_fixtures_cannot_reach_is_written_down():
+    """The escape hatch has to stay small, or the test above stops meaning anything."""
+    assert len(UI_READS_NOT_IN_FIXTURES) <= 12, "too much is being excused"
+    assert UI_READS_NOT_IN_FIXTURES <= _ui_reads(), (
+        "something in the list is not read by the UI at all any more; delete it"
+    )
