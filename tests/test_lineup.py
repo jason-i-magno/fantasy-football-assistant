@@ -776,3 +776,28 @@ def test_an_unknown_name_lists_what_is_configured():
     client = FakeLeagues({"111": "First", "222": "Second"})
     with pytest.raises(UnknownLeague, match="'First', 'Second'"):
         resolve(client, two_league_config(), "Third")
+
+
+def test_a_player_in_a_reserve_slot_has_no_rate_from_here_either():
+    """Both feeds keep publishing weekly rows for a player on IR.
+
+    Found live: a back in an IR slot read 0.0 for the week -- correctly, he cannot be
+    started -- and 2.6 a game for the rest of the season beside it, in the column that
+    decides drops. The number is real and it is about a player this roster cannot play,
+    so the card shows the same dash it shows for anyone nobody projects.
+    """
+    forward = {"projection": {"rest_per_game": 2.6, "playoff_per_game": 2.4}}
+    world = roster_world(
+        SETTLED_STARTERS,
+        [("rb3", "RB", 9.0, 9.0, "SF", forward), ("wr4", "WR", 6.0, 6.0)],
+        ir=[("hurt", "RB", 0.0, 44.0, "SF", forward)],
+    )
+    advice = build_advice(**world)
+    hurt = next(l for l in advice.bench if l.player_id == "hurt")
+    assert hurt.reserved == "IR" and hurt.reasons == ("in an IR slot",)
+    assert hurt.points == 0.0 and hurt.rest is None and hurt.playoff is None
+
+    # The dash belongs to the reserve slot, not to the feed: the same figures on a bench
+    # player come through, which is what makes the IR card's silence mean something.
+    healthy = next(l for l in advice.bench if l.player_id == "rb3")
+    assert (healthy.rest, healthy.playoff) == (2.6, 2.4)

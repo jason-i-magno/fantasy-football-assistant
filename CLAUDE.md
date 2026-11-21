@@ -273,6 +273,13 @@ to get wrong, in the order they bite:
   comes is wrong in one direction or the other. The slot is also checked ahead of the bye in
   `_effective`: the one IR player in the `.env` league was on a bye too, and his card said
   "on bye", which is true and is not the news.
+  **And he has no rate from here either.** Both feeds keep publishing weekly rows for a
+  player on IR, so his card read 0.0 for the week -- correctly -- next to 2.6 a game for
+  the rest of the season, in the very columns that rank the watchlist and set the floor
+  under a drop. `player_line` carries `rest` and `playoff` as None whenever `reserved` is
+  set. The contrast to keep is the bye: a player on a bye also projects nothing this week,
+  and his forward rate is the most useful number on his card, because he is coming back
+  next week and an IR player is not.
 - **Byes come from the kickoff schedule.** Both feeds publish a row for a team on bye
   (Sleeper's empty, ESPN's with `appliedTotal` 0), so "no projection" finds nothing. A
   player with no NFL team at all is a different thing and must not be called a bye.

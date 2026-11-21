@@ -264,8 +264,14 @@ def player_line(
         reserved=reserved,
         reasons=reasons + (("locked: his game started",) if locked else ()),
         keep=horizon.keep(projection, points),
-        rest=projection.rest_per_game if projection is not None else None,
-        playoff=projection.playoff_per_game if projection is not None else None,
+        # No forward rate for a player held off the active roster. Both feeds keep
+        # publishing weekly rows for him -- a back on IR came back at 2.6 a game for the
+        # rest of the season and 2.4 for the playoffs -- and those are real numbers about
+        # a player this roster cannot start, sitting in the columns that decide drops and
+        # rank the watchlist. A dash is the honest reading, and it is the same answer this
+        # week's column already gives him.
+        rest=None if reserved or projection is None else projection.rest_per_game,
+        playoff=None if reserved or projection is None else projection.playoff_per_game,
     )
 
 
