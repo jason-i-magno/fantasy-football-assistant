@@ -453,8 +453,12 @@ def _advice_loader(calls):
         standing_rosters = [
             {**world["rosters"][0],
              "settings": {"wins": 5, "losses": 3, "ties": 0, "fpts": 900, "fpts_decimal": 0}},
+            # The chaser has outscored the leader, so a tie on record goes its way and
+            # the leader's place actually depends on the games. With it behind on points
+            # too there is nothing to watch: the leader wins every simulated tiebreak and
+            # no result moves its odds at all.
             {"roster_id": 4, "owner_id": "u4", "players": [], "starters": [],
-             "settings": {"wins": 3, "losses": 5, "ties": 0, "fpts": 800, "fpts_decimal": 0}},
+             "settings": {"wins": 3, "losses": 5, "ties": 0, "fpts": 1000, "fpts_decimal": 0}},
         ]
         schedule = {week: [{"roster_id": 3, "matchup_id": 1, "points": 0.0},
                            {"roster_id": 4, "matchup_id": 1, "points": 0.0}]
@@ -525,6 +529,17 @@ def test_lineup_payload_carries_the_whole_screen(recording):
     # Two teams are not a spread: there is nothing to estimate from a gap of one pair, so
     # the estimator claims nothing and says so.
     assert race["scoring"]["reliability"] == 0.0 and race["scoring"]["flat"] is True
+
+    # And this week's fixture, with which way to want it. One game in this league, and it
+    # is the user's own, so the phone can say "win it" rather than "root for".
+    assert race["focus"] == 3
+    watch, = race["swings"]
+    assert watch["week"] == 9 and watch["mine"] is True
+    assert {watch["first"], watch["second"]} == {3, 4}
+    assert watch["first_name"] == "My Team"
+    assert watch["root_for"] == 3, "winning is what helps the leader"
+    assert watch["if_first"] > watch["if_second"]
+    assert watch["swing"] == pytest.approx(abs(watch["if_first"] - watch["if_second"]))
 
 
 def test_one_build_serves_every_screen(recording):
