@@ -203,6 +203,18 @@ to get wrong, in the order they bite:
   counts is wrong whenever a player is eligible at two positions, and lost up to 12 points
   on 66 of 400 random rosters before it was replaced. `tests/test_optimal.py` keeps a
   brute-force cross-check.
+- **The add list and the watchlist have their own floors, because they are different
+  numbers.** An add's gain is this Sunday's points and it costs a waiver claim (rolling
+  priority in both `.env` leagues, so using it goes to the back of the queue), a roster
+  spot and usually somebody's place -- `MIN_ADD_GAIN` is half a point, which is also about
+  where the two feeds stop disagreeing on one player. The watchlist's gain is per game
+  over every week still to be played and the claim is softer -- worth owning, not worth
+  claiming today -- so `MIN_WATCH_GAIN` keeps the old tenth of a point, which sustained
+  over seven weeks is most of a point of real value. One threshold served both until it
+  was measured: at 0.1 the band it let through was a 0.21-point add across both leagues,
+  against the adds worth having at 1.55 and 0.51. Raising it also moved that player to the
+  watchlist, where he reads as worth owning rather than worth claiming, which is the
+  distinction the single floor could not draw.
 - **A diff of starting *sets*, not of seats.** A lineup scores the same however its eligible
   players are spread across eligible slots, so a seat-wise comparison reports confident
   swaps worth nothing on a week whose real gain is zero.

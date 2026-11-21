@@ -801,3 +801,37 @@ def test_a_player_in_a_reserve_slot_has_no_rate_from_here_either():
     # player come through, which is what makes the IR card's silence mean something.
     healthy = next(l for l in advice.bench if l.player_id == "rb3")
     assert (healthy.rest, healthy.playoff) == (2.6, 2.4)
+
+
+def test_an_add_worth_a_fraction_of_a_point_is_not_advice():
+    """An add spends a waiver claim, a roster spot and usually somebody's place. A gain
+    inside what the two feeds disagree about on one player does not pay for that."""
+    world = roster_world(SETTLED_STARTERS, SETTLED_BENCH,
+                         free_agents=[("meh", "K", 7.3, 7.3)])  # the K starts at 7.0
+    advice = build_advice(**world)
+    assert [c.line.player_id for c in advice.adds] == [], "0.3 is not a reason to claim"
+
+    better = roster_world(SETTLED_STARTERS, SETTLED_BENCH,
+                          free_agents=[("good", "K", 8.2, 8.2)])
+    assert [c.line.player_id for c in build_advice(**better).adds] == ["good"]
+
+
+def test_the_watchlist_keeps_the_lower_bar_it_had():
+    """Two floors, because they are two different numbers.
+
+    An add's gain is this Sunday's points; the watchlist's is per game over every week
+    still to be played, where a tenth sustained is most of a point of real value. A player
+    who is not worth a claim today can still be worth watching, and one threshold for both
+    made that impossible to say.
+    """
+    # Deliberately *between* the two floors: 0.2 of this Sunday against the kicker in the
+    # lineup, and 0.3 a game over the weeks still to come. One threshold for both cannot
+    # tell those apart, whichever value it takes.
+    forward = {"projection": {"rest_per_game": 7.3, "playoff_per_game": 7.3}}
+    world = roster_world(
+        SETTLED_STARTERS, SETTLED_BENCH,
+        free_agents=[("later", "K", 7.2, 7.2, "SF", forward)],
+    )
+    advice = build_advice(**world)
+    assert [c.line.player_id for c in advice.adds] == [], "not worth a claim this week"
+    assert "later" in [c.line.player_id for c in advice.watch], "but worth watching"
