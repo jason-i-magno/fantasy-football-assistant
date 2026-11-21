@@ -4,6 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
+The project runs on free-threaded CPython (`.python-version` is `3.14t`, which `uv`
+downloads on its own). `requires-python` is still 3.11: the floor has not moved, and CI
+tests 3.11, 3.14 and 3.14t. Delete `.python-version` to go back to a stock interpreter --
+nothing depends on the free-threaded build beyond being faster on it.
+
 ```bash
 uv sync                                          # install deps into .venv
 uv run pytest                                    # full suite, offline, ~8s
@@ -122,6 +127,16 @@ to get wrong, in the order they bite:
   again. 5.07s to 1.30s, medians of cold builds against a real league. Past that point the
   measured breakdown is: ESPN's revalidated feed 0.23s of the critical path, the Sleeper
   wave about 0.5s, and 0.5s of CPU after it -- there is no single pole left to pull.
+- **Free-threading is why the default interpreter is `3.14t`.** The wave is CPU that the
+  GIL used to serialise, so taking the GIL away is the largest single win left and it cost
+  one file: same interpreter, same packages, `PYTHON_GIL=1` against `PYTHON_GIL=0`, three
+  pairs, **1.61s against 1.17s**. The CPU total barely moves (1.65s against 1.54s), which
+  is the whole story -- the same work, now on more than one core instead of queued.
+  Nothing in the code changed for it. The one shared-state pattern that matters,
+  `SleeperClient._once_per_run`, is check-then-set across an HTTP call, so the GIL never
+  made it atomic either; the worst case was and is a duplicated fetch, never a wrong
+  answer. The web app's feeds were already behind locks: eight concurrent cold requests
+  return eight identical bodies from one build.
 - **The build is CPU-bound, not network-bound: 1.55s wall against 1.58s of CPU.** That is
   the single most useful number here and it was measured late, after a lot of work that
   assumed the opposite. The structural fixes above were still right -- they removed waits
