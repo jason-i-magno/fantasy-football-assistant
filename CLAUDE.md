@@ -21,6 +21,7 @@ uv run ffa lineup --league NAME                  # another configured league, by
 uv run ffa lineup --teams                        # live: every manager's lineup as set
 uv run ffa serve --replay tests/fixtures/replay_mock_12team.jsonl   # offline smoke test of the web app
 uv run ffa serve                                 # live: the web app, on every interface
+make install-service                             # run `ffa serve` from this clone as a systemd user service
 ```
 
 No linter, formatter or type checker is configured. Config comes from `./.env` (see

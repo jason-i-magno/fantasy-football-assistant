@@ -264,6 +264,24 @@ interface so the phone can reach it, and prints the LAN URL to type in.
 No new dependencies: a stdlib WSGI server, three static files, no build step. The tests drive
 it in-process through httpx's WSGI transport, so they stay offline like the rest of the suite.
 
+### Keeping it running
+
+On Linux, `ffa serve` can run as a systemd user service, so it comes back after a crash or a
+reboot without a terminal left open:
+
+```bash
+make install-service       # install, enable at login, and (re)start, from this clone
+journalctl --user -u ffa -f
+```
+
+It runs from the clone you install it from, with that clone's `.env`, so set
+`FFA_WEB_TOKEN` there for a token. Run it again after pulling changes; it reinstalls and
+restarts. It stops at logout unless lingering is on (`loginctl enable-linger`), which also
+starts it at boot. Stop it (`systemctl --user stop ffa`) before running `uv run ffa serve`
+yourself, as both want port 8765. `make uninstall-service` removes it. Without `make`, copy
+`contrib/systemd/ffa.service` to `~/.config/systemd/user/` and replace `@DIR@` and `@UV@`
+with the clone's path and uv's.
+
 ## Tests
 
 ```bash
