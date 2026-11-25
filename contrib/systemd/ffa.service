@@ -1,0 +1,33 @@
+# A systemd user service that keeps `ffa serve` running: the web app, on every interface
+# at port 8765, for the phone.
+#
+# `make install-service` installs it with @DIR@ replaced by the clone's path and @UV@ by
+# uv's. Config comes from the clone's .env, as it does for `uv run ffa serve`, so
+# FFA_WEB_TOKEN there locks it with a token. For other options, add an override with
+# `systemctl --user edit ffa`.
+#
+#   systemctl --user stop ffa        # before running `uv run ffa serve` yourself
+#   journalctl --user -u ffa -f      # its output
+
+[Unit]
+Description=ffa: fantasy football assistant web app for the phone
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=@DIR@
+ExecStart=@UV@ run ffa serve
+# Python buffers stdout when it isn't a terminal; this sends output to the journal as it happens.
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=10s
+
+# The filesystem sandboxing options need user namespaces in a user service, which some
+# distributions restrict, so they would stop the unit starting there. NoNewPrivileges
+# needs nothing.
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
