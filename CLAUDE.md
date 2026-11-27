@@ -27,6 +27,12 @@ make install-service                             # run `ffa serve` from this clo
 No linter, formatter or type checker is configured. Config comes from `./.env` (see
 `.env.example`); real environment variables win over the file.
 
+Where the service is installed (`systemctl --user is-active ffa`), it is the `ffa serve` on
+port 8765, running from the clone it was installed from. To put merged code live, run
+`systemctl --user restart ffa` -- never kill it and start `uv run ffa serve` by hand. A clean
+exit is not restarted, so that leaves the service stopped, and nothing brings the app back
+at the next boot. A server of your own for testing goes on a port of its own (`--port`).
+
 `main` is protected: changes land through pull requests, and the `tests` check
 (`.github/workflows/tests.yml`, pytest on 3.11, 3.14 and free-threaded 3.14t) must pass to
 merge. CI runs with `--locked`, so a dependency change must ship with its updated
